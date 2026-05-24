@@ -1,0 +1,27 @@
+import { Loader2 } from 'lucide-react'
+
+interface ConnectionOverlayProps {
+  phase: 'DISCONNECTED' | 'CONNECTING_TERM' | 'CONNECTING_CTRL' | 'CONNECTED'
+  reconnectCount: number
+}
+
+const phaseLabels: Record<string, string> = {
+  DISCONNECTED: '连接已断开',
+  CONNECTING_TERM: '正在连接终端通道...',
+  CONNECTING_CTRL: '正在连接控制通道...',
+  CONNECTED: '已连接',
+}
+
+export function ConnectionOverlay({ phase, reconnectCount }: ConnectionOverlayProps) {
+  if (phase === 'CONNECTED') return null
+
+  return (
+    <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center z-10">
+      <Loader2 className="w-8 h-8 text-blue-400 animate-spin mb-3" />
+      <p className="text-white text-sm font-medium">{phaseLabels[phase]}</p>
+      {reconnectCount > 0 && (
+        <p className="text-gray-400 text-xs mt-1">第 {reconnectCount} 次重连</p>
+      )}
+    </div>
+  )
+}
