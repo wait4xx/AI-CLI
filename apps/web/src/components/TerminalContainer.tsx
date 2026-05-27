@@ -10,19 +10,21 @@ import { useSessionStore } from '../store/sessionStore'
 import { MobileKeyboardAdapter } from '../adapters/MobileKeyboardAdapter'
 import { GestureHandler, MIN_FONT_SIZE, MAX_FONT_SIZE } from '../lib/GestureHandler'
 import { ConnectionOverlay } from './ConnectionOverlay'
+import { OfflineCache } from '../lib/offlineCache'
 import { QuickActionsPanel } from './QuickActionsPanel'
+import { THEME_COLORS } from '../lib/theme'
 import '@xterm/xterm/css/xterm.css'
 
 // Module-level terminal instance cache (ADR-011: never dispose)
 const terminalCache = new Map<string, Terminal>()
 const fitAddonCache = new Map<string, FitAddon>()
 
-const XTERM_THEME = {
-  background: '#1a1b26',
-  foreground: '#c0caf5',
-  cursor: '#c0caf5',
-  cursorAccent: '#1a1b26',
-  selectionBackground: '#33467c',
+const XTERM_THEME_DARK = {
+  background: THEME_COLORS.bg,
+  foreground: THEME_COLORS.foreground,
+  cursor: THEME_COLORS.foreground,
+  cursorAccent: THEME_COLORS.bg,
+  selectionBackground: THEME_COLORS.selection,
   black: '#15161e',
   red: '#f7768e',
   green: '#9ece6a',
@@ -41,6 +43,34 @@ const XTERM_THEME = {
   brightWhite: '#c0caf5',
 }
 
+const XTERM_THEME_LIGHT = {
+  background: '#fafafa',
+  foreground: '#383a42',
+  cursor: '#526fff',
+  cursorAccent: '#fafafa',
+  selectionBackground: '#bfceff',
+  black: '#383a42',
+  red: '#e45649',
+  green: '#50a14f',
+  yellow: '#c18401',
+  blue: '#4078f2',
+  magenta: '#a626a4',
+  cyan: '#0184bc',
+  white: '#a0a1a7',
+  brightBlack: '#696c77',
+  brightRed: '#e06c75',
+  brightGreen: '#98c379',
+  brightYellow: '#d19a66',
+  brightBlue: '#61afef',
+  brightMagenta: '#c678dd',
+  brightCyan: '#56b6c2',
+  brightWhite: '#ffffff',
+}
+
+function getXtermTheme(theme: 'dark' | 'light') {
+  return theme === 'light' ? XTERM_THEME_LIGHT : XTERM_THEME_DARK
+}
+
 export function TerminalContainer() {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -48,6 +78,7 @@ export function TerminalContainer() {
   const keyboardAdapterRef = useRef<MobileKeyboardAdapter | null>(null)
   const gestureHandlerRef = useRef<GestureHandler | null>(null)
   const rendererTypeRef = useRef<'webgl' | 'canvas'>('webgl')
+  const offlineCacheRef = useRef<OfflineCache | null>(null)
 
   const { accessToken, refreshToken: refreshTokenFn, logout } = useAuth()
   const {
@@ -64,12 +95,17 @@ export function TerminalContainer() {
     logout,
   )
 
-  const { sessionId, connectionPhase, isConnected, fontSize, setFontSize } = useSessionStore()
+  const { sessionId, connectionPhase, isConnected, fontSize, setFontSize, theme } = useSessionStore()
 
   // Expose sendInjectCode to store so App.tsx / CodeEditor can use it
   useEffect(() => {
     useSessionStore.setState({ sendInjectCode })
   }, [sendInjectCode])
+
+  // Initialize offline cache
+  useEffect(() => {
+    offlineCacheRef.current = new OfflineCache(sessionId || undefined)
+  }, [sessionId])
 
   // Initialize terminal instance
   useEffect(() => {
@@ -79,8 +115,17 @@ export function TerminalContainer() {
     let term: Terminal
     let fitAddon: FitAddon
 
-    // Check if we have a cached terminal for this session
+    // Clean up terminals for other sessions
     const cacheKey = sessionId || '__default'
+    for (const [key, cachedTerm] of terminalCache.entries()) {
+      if (key !== cacheKey) {
+        cachedTerm.dispose()
+        terminalCache.delete(key)
+        fitAddonCache.delete(key)
+      }
+    }
+
+    // Check if we have a cached terminal for this session
     const cached = terminalCache.get(cacheKey)
 
     if (cached) {
@@ -90,7 +135,7 @@ export function TerminalContainer() {
       fitAddon.fit()
     } else {
       term = new Terminal({
-        theme: XTERM_THEME,
+        theme: getXtermTheme(theme),
         fontSize,
         cursorBlink: true,
         scrollback: 5000,
@@ -177,6 +222,14 @@ export function TerminalContainer() {
     }
   }, [fontSize])
 
+  // Sync theme changes from store to terminal
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = getXtermTheme(theme)
+      fitAddonRef.current?.fit()
+    }
+  }, [theme])
+
   // Terminal data → WS input
   useEffect(() => {
     if (!termRef.current) return
@@ -237,10 +290,16 @@ export function TerminalContainer() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
 
-  // Cleanup on unmount — disconnect WS
+  // Cleanup on unmount — disconnect WS and clean cache
   useEffect(() => {
     return () => {
       disconnect()
+      // Clean up cached terminals on unmount
+      for (const [key, cachedTerm] of terminalCache.entries()) {
+        cachedTerm.dispose()
+        terminalCache.delete(key)
+        fitAddonCache.delete(key)
+      }
     }
   }, [disconnect])
 
@@ -249,9 +308,9 @@ export function TerminalContainer() {
       <div
         ref={containerRef}
         className="w-full h-full overflow-hidden"
-        style={{ backgroundColor: XTERM_THEME.background }}
+        style={{ backgroundColor: getXtermTheme(theme).background }}
       />
-      <ConnectionOverlay phase={connectionPhase} reconnectCount={reconnectCount} />
+      <ConnectionOverlay phase={connectionPhase} reconnectCount={reconnectCount} cachedScreen={offlineCacheRef.current?.getCachedScreen()} />
       <QuickActionsPanel onAction={sendQuickAction} />
     </div>
   )

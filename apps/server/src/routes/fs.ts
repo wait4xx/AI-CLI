@@ -2,6 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import fs from 'fs/promises'
 import path from 'path'
 import fsSync from 'fs'
+import rateLimit from '@fastify/rate-limit'
+import { auditLog } from '../core/audit.js'
 
 function getProjectRoot(): string {
   return process.env.PROJECT_ROOT || '/workspace'
@@ -49,6 +51,18 @@ function shouldHide(name: string): boolean {
 }
 
 export async function fsRoutes(fastify: FastifyInstance) {
+  // [W6修复] 对文件系统路由添加速率限制，防止滥用
+  await fastify.register(rateLimit, {
+    max: 100,
+    timeWindow: '1 minute',
+    hook: 'preHandler',
+    errorResponseBuilder: () => ({
+      statusCode: 429,
+      error: 'Too Many Requests',
+      message: '请求过于频繁，请稍后再试',
+    }),
+  })
+
   fastify.get('/tree', async (request: FastifyRequest, reply: FastifyReply) => {
     const relativePath = (request.query as any).path || ''
 
@@ -132,11 +146,56 @@ export async function fsRoutes(fastify: FastifyInstance) {
       return reply.code(500).send({ error: 'Failed to read file' })
     }
 
+    const userId = (request as any).user?.userId
+    auditLog('FILE_READ', userId, { path: relativePath })
+
     return {
       content,
       path: relativePath,
       size: stat.size,
       language: getLanguage(resolved),
     }
+  })
+
+  // PUT /api/fs/file — write file
+  fastify.put('/file', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { path: relativePath, content } = request.body as { path: string; content: string }
+
+    if (!relativePath) {
+      return reply.code(400).send({ error: 'Missing path parameter' })
+    }
+
+    if (typeof content !== 'string') {
+      return reply.code(400).send({ error: 'Missing or invalid content' })
+    }
+
+    // Size check (1MB max)
+    if (Buffer.byteLength(content, 'utf-8') > MAX_FILE_SIZE) {
+      return reply.code(413).send({ error: 'Content too large (max 1MB)' })
+    }
+
+    const resolved = await sanitizePath(relativePath)
+    if (!resolved) {
+      return reply.code(403).send({ error: 'Path traversal detected' })
+    }
+
+    // Create parent directories if needed
+    const dir = path.dirname(resolved)
+    try {
+      await fs.mkdir(dir, { recursive: true })
+    } catch {
+      return reply.code(500).send({ error: 'Failed to create directory' })
+    }
+
+    try {
+      await fs.writeFile(resolved, content, 'utf-8')
+    } catch {
+      return reply.code(500).send({ error: 'Failed to write file' })
+    }
+
+    const userId = (request as any).user?.userId
+    auditLog('FILE_WRITE', userId, { path: relativePath, size: Buffer.byteLength(content, 'utf-8') })
+
+    return { success: true, path: relativePath }
   })
 }

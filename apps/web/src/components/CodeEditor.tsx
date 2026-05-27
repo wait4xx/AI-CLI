@@ -1,5 +1,6 @@
 import { useCallback, useState, useMemo } from 'react'
 import CodeMirror, { EditorView } from '@uiw/react-codemirror'
+import { ViewUpdate } from '@codemirror/view'
 import { javascript } from '@codemirror/lang-javascript'
 import { python } from '@codemirror/lang-python'
 import { json } from '@codemirror/lang-json'
@@ -7,6 +8,7 @@ import { markdown } from '@codemirror/lang-markdown'
 import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
 import { X, Terminal } from 'lucide-react'
+import { THEME_COLORS } from '../lib/theme'
 
 interface CodeEditorProps {
   filePath: string
@@ -43,42 +45,42 @@ const fileName = (filePath: string) => {
 
 const darkTheme = EditorView.theme({
   '&': {
-    backgroundColor: '#1a1b26',
-    color: '#a9b1d6',
+    backgroundColor: THEME_COLORS.bg,
+    color: THEME_COLORS.textMuted,
     fontSize: '13px',
   },
   '.cm-content': {
-    caretColor: '#c0caf5',
+    caretColor: THEME_COLORS.foreground,
     fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Monaco, monospace',
     lineHeight: '1.5',
   },
   '.cm-cursor': {
-    borderLeftColor: '#c0caf5',
+    borderLeftColor: THEME_COLORS.foreground,
   },
   '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
-    backgroundColor: '#33467c',
+    backgroundColor: THEME_COLORS.selection,
   },
   '.cm-gutters': {
-    backgroundColor: '#1a1b26',
-    borderRight: '1px solid #292e42',
-    color: '#565f89',
+    backgroundColor: THEME_COLORS.bg,
+    borderRight: `1px solid ${THEME_COLORS.gutterBorder}`,
+    color: THEME_COLORS.gutterText,
   },
   '.cm-activeLineGutter': {
-    backgroundColor: '#292e42',
+    backgroundColor: THEME_COLORS.gutterBorder,
   },
   '.cm-activeLine': {
-    backgroundColor: '#292e4280',
+    backgroundColor: `${THEME_COLORS.gutterBorder}80`,
   },
   '.cm-matchingBracket': {
-    backgroundColor: '#33467c',
-    color: '#c0caf5 !important',
+    backgroundColor: THEME_COLORS.selection,
+    color: `${THEME_COLORS.foreground} !important`,
   },
 })
 
 export function CodeEditor({ filePath, content, language, onClose, onInjectCode }: CodeEditorProps) {
   const [selectedText, setSelectedText] = useState('')
   const extensions = useMemo(() => {
-    const selectionChangeExt = EditorView.updateListener.of((update: any) => {
+    const selectionChangeExt = EditorView.updateListener.of((update: ViewUpdate) => {
       if (update.selectionSet || update.docChanged) {
         const sel = update.state.selection.main
         if (!sel.empty) {

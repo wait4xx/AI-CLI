@@ -81,6 +81,35 @@ docker compose up -d app
 
 The container serves both the API and frontend on port 3000.
 
+### HTTPS / TLS
+
+The server runs on plain HTTP by default. For production deployments, place it behind a reverse proxy with TLS termination. Without TLS, the JWT token and all terminal data are transmitted in plaintext.
+
+**Minimal nginx config:**
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+
+    ssl_certificate /etc/ssl/cert.pem;
+    ssl_certificate_key /etc/ssl/key.pem;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+You can also use Caddy (automatic TLS) or Traefik as alternatives to nginx.
+
 ## Project Structure
 
 ```
@@ -115,6 +144,8 @@ ai-cli-mobile/
 | `PROJECT_ROOT` | No | `/workspace` | Directory to serve via file explorer |
 | `ADMIN_USERNAME` | No | `admin` | Initial admin username |
 | `ADMIN_PASSWORD` | Yes | — | Initial admin password |
+| `LOG_LEVEL` | No | `info` | Log level (trace/debug/info/warn/error/fatal) |
+| `SHELL_CMD` | No | `bash` | Shell command for the generic shell adapter |
 | `VITE_WS_URL` | No | auto | WebSocket URL (frontend, default: same origin) |
 
 ## WS Protocol
@@ -150,8 +181,8 @@ adapters.set('mytool', new MyToolAdapter())
 
 ## Roadmap
 
-- [ ] Multi-user support (user management API, session isolation)
-- [ ] Persistent session state (survive server restarts)
+- [x] Multi-user support (user management API, session isolation)
+- [x] Persistent session state (survive server restarts)
 - [ ] More CLI adapters (Aider, Cursor, etc.)
 - [ ] File editor (write support via PUT /api/fs/file)
 - [ ] Proper PWA icons and splash screens

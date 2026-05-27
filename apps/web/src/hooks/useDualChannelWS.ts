@@ -8,8 +8,32 @@ import {
   type ControlServerMessage,
 } from '@ai-cli/shared'
 import { useSessionStore } from '../store/sessionStore'
+import { sendNotification } from '../lib/notifications'
+import { OfflineCache } from '../lib/offlineCache'
 
 const WS_BASE = import.meta.env.VITE_WS_URL || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+// 安全修复[C5]: 生产环境强制使用 wss://，非 HTTPS 时发出警告
+if (import.meta.env.PROD && window.location.protocol === 'http:') {
+  console.warn(
+    '[安全警告] 当前页面使用 HTTP 协议，WebSocket 将以明文 ws:// 传输。' +
+    '生产环境应始终使用 HTTPS 以确保 WebSocket 加密传输(wss://)。'
+  )
+}
+
+// 安全修复[C7]: 运行时消息类型校验
+const CONTROL_MSG_TYPES = new Set([
+  'AUTH', 'AUTH_OK', 'ATTACH_SESSION', 'INIT_SESSION', 'RESIZE',
+  'QUICK_ACTION', 'INJECT_CODE', 'OBSERVE_SESSION', 'PING', 'PONG',
+  'STATUS_UPDATE', 'SESSION_READY', 'TOKEN_RENEWED', 'ERROR',
+])
+
+function isValidControlMsg(data: unknown): data is { type: string; [key: string]: unknown } {
+  if (!data || typeof data !== 'object') return false
+  const obj = data as Record<string, unknown>
+  if (typeof obj.type !== 'string') return false
+  if (!CONTROL_MSG_TYPES.has(obj.type)) return false
+  return true
+}
 
 const MAX_RECONNECT_DELAY = 30_000
 const INITIAL_RECONNECT_DELAY = 1_000
@@ -27,6 +51,7 @@ interface UseDualChannelWS {
   sendResize: (cols: number, rows: number) => void
   sendQuickAction: (payload: string) => void
   sendInjectCode: (code: string) => void
+  sendObserveSession: (sessionId: string) => void
 }
 
 export function useDualChannelWS(
@@ -47,6 +72,7 @@ export function useDualChannelWS(
   const resizeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastResizeSentRef = useRef(0)
   const isConnectingRef = useRef(false)
+  const offlineCacheRef = useRef<OfflineCache | null>(null)
 
   const store = useSessionStore
 
@@ -98,6 +124,153 @@ export function useDualChannelWS(
     }, jittered)
   }
 
+  function reconnectTermOnly() {
+    const s = sessionRef.current
+    const t = termRef.current
+    if (!s || !t) return
+
+    // Close only terminal socket
+    if (termWsRef.current) {
+      termWsRef.current.onopen = null
+      termWsRef.current.onmessage = null
+      termWsRef.current.onclose = null
+      termWsRef.current.onerror = null
+      if (termWsRef.current.readyState === WebSocket.OPEN || termWsRef.current.readyState === WebSocket.CONNECTING) {
+        termWsRef.current.close()
+      }
+      termWsRef.current = null
+    }
+    if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
+
+    // Reconnect terminal, keep control
+    const token = getAccessToken()
+    if (!token) { onAuthFailure(); return }
+
+    store.getState().setConnected('CONNECTING_TERM')
+    const termWs = new WebSocket(`${WS_BASE}/ws/terminal`)
+    termWs.binaryType = 'arraybuffer'
+    termWsRef.current = termWs
+
+    termWs.onopen = () => {
+      const auth: ControlClientMessage = {
+        type: 'AUTH',
+        accessToken: token,
+        protocolVersion: PROTOCOL_VERSION,
+      }
+      termWs.send(JSON.stringify(auth))
+    }
+
+    termWs.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'AUTH_OK') {
+            const attach: ControlClientMessage = { type: 'ATTACH_SESSION', sessionId: s.sessionId }
+            termWs.send(JSON.stringify(attach))
+            termWs.onmessage = (ev) => {
+              if (ev.data instanceof ArrayBuffer) {
+                const buf = new Uint8Array(ev.data)
+                if (buf.length === 1 && buf[0] === 0x01) return
+                t.write(buf)
+              }
+            }
+            startTermPing()
+            store.getState().setConnected('CONNECTED')
+            isConnectingRef.current = false
+            return
+          }
+        } catch {}
+        return
+      }
+    }
+
+    termWs.onclose = (event) => {
+      if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
+      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
+      // Unexpected close — try again
+      scheduleReconnect()
+    }
+  }
+
+  function reconnectCtrlOnly() {
+    const s = sessionRef.current
+    if (!s) return
+
+    // Close only control socket
+    if (ctrlWsRef.current) {
+      ctrlWsRef.current.onopen = null
+      ctrlWsRef.current.onmessage = null
+      ctrlWsRef.current.onclose = null
+      ctrlWsRef.current.onerror = null
+      if (ctrlWsRef.current.readyState === WebSocket.OPEN || ctrlWsRef.current.readyState === WebSocket.CONNECTING) {
+        ctrlWsRef.current.close()
+      }
+      ctrlWsRef.current = null
+    }
+    if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
+
+    const token = getAccessToken()
+    if (!token) { onAuthFailure(); return }
+
+    store.getState().setConnected('CONNECTING_CTRL')
+    const ctrlWs = new WebSocket(`${WS_BASE}/ws/control`)
+    ctrlWsRef.current = ctrlWs
+
+    ctrlWs.onopen = () => {
+      const auth: ControlClientMessage = {
+        type: 'AUTH',
+        accessToken: token,
+        protocolVersion: PROTOCOL_VERSION,
+      }
+      ctrlWs.send(JSON.stringify(auth))
+    }
+
+    let authenticated = false
+    ctrlWs.onmessage = (event) => {
+      if (typeof event.data !== 'string') return
+      try {
+        const msg: ControlServerMessage = JSON.parse(event.data)
+        // 安全修复[C7]: 运行时校验消息类型
+        if (!isValidControlMsg(msg)) {
+          console.warn('[安全警告] 收到无效的控制消息类型，已丢弃:', msg)
+          return
+        }
+        if (!authenticated) {
+          if (msg.type === 'AUTH_OK') {
+            authenticated = true
+            const init: ControlClientMessage = {
+              type: 'INIT_SESSION',
+              sessionId: s.sessionId,
+              cols: s.cols,
+              rows: s.rows,
+              adapter: 'claude',
+            }
+            ctrlWs.send(JSON.stringify(init))
+            return
+          }
+          return
+        }
+        if (msg.type === 'SESSION_READY') {
+          store.getState().setConnected('CONNECTED')
+          isConnectingRef.current = false
+          reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+          setReconnectCount(0)
+          startCtrlPing()
+          return
+        }
+        handleCtrlMessage(msg)
+      } catch {}
+    }
+
+    ctrlWs.onclose = (event) => {
+      if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
+      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
+      scheduleReconnect()
+    }
+  }
+
   function startTermPing() {
     if (termPingRef.current) clearInterval(termPingRef.current)
     termPingRef.current = setInterval(() => {
@@ -120,9 +293,16 @@ export function useDualChannelWS(
   }
 
   function handleCtrlMessage(data: ControlServerMessage) {
+    // 安全修复[C7]: 二次校验（防御性编程）
+    if (!isValidControlMsg(data)) return
+
     switch (data.type) {
       case 'STATUS_UPDATE':
         store.getState().setAgentStatus(data.status)
+        store.getState().updateSessionStatus(data.sessionId, data.status)
+        if (data.status === 'WAITING_APPROVAL' && document.hidden) {
+          sendNotification('AI CLI', 'An action is waiting for your approval')
+        }
         break
       case 'TOKEN_RENEWED':
         store.getState().setTokens(data.accessToken, store.getState().refreshToken ?? '')
@@ -157,6 +337,9 @@ export function useDualChannelWS(
     sessionRef.current = { sessionId, cols, rows }
     termRef.current = term
 
+    // Initialize offline cache
+    offlineCacheRef.current = new OfflineCache(sessionId)
+
     // --- Terminal WS ---
     const termWs = new WebSocket(`${WS_BASE}/ws/terminal`)
     termWs.binaryType = 'arraybuffer'
@@ -185,9 +368,10 @@ export function useDualChannelWS(
             termWs.onmessage = (ev) => {
               if (ev.data instanceof ArrayBuffer) {
                 const buf = new Uint8Array(ev.data)
-                // Skip PONG byte (0x01)
                 if (buf.length === 1 && buf[0] === 0x01) return
                 term.write(buf)
+                // Cache screen data for offline mode
+                offlineCacheRef.current?.cacheScreen(new TextDecoder().decode(buf))
               }
             }
 
@@ -231,6 +415,9 @@ export function useDualChannelWS(
         store.getState().setDisconnected()
         isConnectingRef.current = false
         scheduleReconnect()
+      } else if (store.getState().isConnected) {
+        // Terminal closed unexpectedly but control may still be up — reconnect only terminal
+        reconnectTermOnly()
       }
     }
 
@@ -261,6 +448,11 @@ export function useDualChannelWS(
 
       try {
         const msg: ControlServerMessage = JSON.parse(event.data)
+        // 安全修复[C7]: 运行时校验消息类型
+        if (!isValidControlMsg(msg)) {
+          console.warn('[安全警告] 收到无效的控制消息类型，已丢弃:', msg)
+          return
+        }
 
         if (!authenticated) {
           if (msg.type === 'AUTH_OK') {
@@ -288,6 +480,11 @@ export function useDualChannelWS(
           setReconnectCount(0)
 
           startCtrlPing()
+
+          // Flush queued offline inputs on reconnect
+          if (offlineCacheRef.current?.hasQueuedInputs()) {
+            offlineCacheRef.current.flushInputs((data) => sendInput(data))
+          }
 
           // Ctrl+L to trigger pty redraw on reconnect
           if (reconnectCount > 0) {
@@ -318,8 +515,10 @@ export function useDualChannelWS(
         return
       }
 
-      // If we were CONNECTED, this is an unexpected close — full reconnect
-      if (store.getState().isConnected || store.getState().connectionPhase === 'CONNECTING_CTRL') {
+      // If connected, only reconnect control channel
+      if (store.getState().isConnected) {
+        reconnectCtrlOnly()
+      } else if (store.getState().connectionPhase === 'CONNECTING_CTRL') {
         closeSockets()
         clearAllTimers()
         store.getState().setDisconnected()
@@ -379,6 +578,9 @@ export function useDualChannelWS(
     const ws = termWsRef.current
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(data)
+    } else {
+      // Queue input for offline mode
+      offlineCacheRef.current?.queueInput(data)
     }
   }, [])
 
@@ -416,10 +618,25 @@ export function useDualChannelWS(
   }, [])
 
   const sendInjectCode = useCallback((code: string) => {
+    // 安全修复[C9]: 限制注入代码长度为 100KB，防止过大 payload
+    const MAX_INJECT_CODE_SIZE = 100 * 1024 // 100KB
+    if (code.length > MAX_INJECT_CODE_SIZE) {
+      console.warn(`[安全警告] INJECT_CODE 内容超过 ${MAX_INJECT_CODE_SIZE} 字节限制 (${code.length} bytes)，已拒绝发送`)
+      return
+    }
+
     const ws = ctrlWsRef.current
     const sessionId = sessionRef.current?.sessionId
     if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
       const msg: ControlClientMessage = { type: 'INJECT_CODE', sessionId, code }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  const sendObserveSession = useCallback((sessionId: string) => {
+    const ws = ctrlWsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const msg: ControlClientMessage = { type: 'OBSERVE_SESSION', sessionId }
       ws.send(JSON.stringify(msg))
     }
   }, [])
@@ -434,5 +651,6 @@ export function useDualChannelWS(
     sendResize,
     sendQuickAction,
     sendInjectCode,
+    sendObserveSession,
   }
 }

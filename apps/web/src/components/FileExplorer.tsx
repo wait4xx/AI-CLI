@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { Drawer } from 'vaul'
 import { Folder, File, ChevronRight, FolderOpen, Loader2, AlertCircle, ChevronLeft } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
@@ -50,17 +50,26 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
     loading: false,
     error: null,
   })
+  // 安全修复[W23]: 使用 AbortController 防止并发请求竞态条件
+  const abortRef = useRef<AbortController | null>(null)
 
   const fetchTree = useCallback(async (dirPath: string) => {
     const token = useSessionStore.getState().accessToken
     if (!token) return
+
+    // 取消上一个未完成的请求
+    if (abortRef.current) {
+      abortRef.current.abort()
+    }
+    const controller = new AbortController()
+    abortRef.current = controller
 
     setState(prev => ({ ...prev, loading: true, error: null, currentPath: dirPath }))
 
     try {
       const res = await fetch(
         `${API_BASE}/api/fs/tree?path=${encodeURIComponent(dirPath)}`,
-        { headers: { Authorization: `Bearer ${token}` } },
+        { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal },
       )
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'Request failed' }))
@@ -73,6 +82,8 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
       })
       setState({ currentPath: dirPath, entries, loading: false, error: null })
     } catch (err) {
+      // 忽略被 abort 的请求（用户快速切换目录时触发）
+      if (controller.signal.aborted) return
       setState(prev => ({ ...prev, loading: false, error: (err as Error).message }))
     }
   }, [])

@@ -2,50 +2,93 @@ import { EventEmitter } from 'events'
 import type { WebSocket } from 'ws'
 import type { AgentStatus } from '@ai-cli/shared'
 import type { CLIAdapter, StateCandidate } from '../adapters/base.js'
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import stripAnsi from 'strip-ansi'
 import pty from 'node-pty'
+import { auditLog } from './audit.js'
+import { SessionRecorder } from './recorder.js'
+import { pinoLogger } from '../lib/logger.js'
+import { SessionStore } from './sessionStore.js'
 
-const execAsync = promisify(exec)
+// [C2修复] 使用 execFile 替代 exec，避免命令注入
+const execFileAsync = promisify(execFile)
 
 const BACKPRESSURE_THRESHOLD = 1048576 // 1MB (ADR-017)
 const THROTTLE_MS = 16
 const STATE_FUSE_COOLDOWN_MS = 500 // state fusion debounce (ADR-008)
 const SAFE_SESSION_ID = /^[a-zA-Z0-9_-]+$/
+const ERROR_RECOVERY_INTERVAL_MS = 10_000
 
 interface Session {
   sessionId: string
+  ownerId: string   // [C1修复] 会话归属用户ID，用于权限校验
   adapter: CLIAdapter
   ptyProcess: pty.IPty
   status: AgentStatus
   termClients: Set<WebSocket>
   ctrlClients: Set<WebSocket>
+  observeClients: Set<WebSocket>
   throttleTimer: NodeJS.Timeout | null
   outputBuffer: Buffer[]
   lastBroadcast: number
+  recorder: SessionRecorder
 }
 
 export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>()
   private adapters: Map<string, CLIAdapter>
   private fuseTimers = new Map<string, NodeJS.Timeout>()
+  private errorRecoveryTimer: NodeJS.Timeout | null = null
+  private sessionStore: SessionStore
 
   constructor(adapters: Map<string, CLIAdapter>) {
     super()
     this.adapters = adapters
+    this.sessionStore = new SessionStore()
+    this.sessionStore.load()
     this.checkTmuxAvailable()
     this.reapOrphanSessions().catch((err) => {
-      console.error('Failed to reap orphan sessions:', err.message)
+      pinoLogger.error({ err }, 'Failed to reap orphan sessions')
     })
+    this.startErrorRecoveryLoop()
   }
 
   private async checkTmuxAvailable(): Promise<void> {
     try {
-      await execAsync('which tmux')
+      await execFileAsync('which', ['tmux'])
     } catch {
-      console.error('FATAL: tmux is not installed or not in PATH. Session management requires tmux.')
+      pinoLogger.fatal('tmux is not installed or not in PATH. Session management requires tmux.')
       process.exit(1)
+    }
+  }
+
+  private startErrorRecoveryLoop(): void {
+    this.errorRecoveryTimer = setInterval(() => {
+      for (const [sessionId, session] of this.sessions.entries()) {
+        if (session.status === 'ERROR') {
+          // [W9修复] 错误恢复加入日志记录，而非静默吞掉错误
+          this.recoverFromError(sessionId).catch((err) => {
+            pinoLogger.error({ err, sessionId }, 'Error recovery failed')
+          })
+        }
+      }
+    }, ERROR_RECOVERY_INTERVAL_MS)
+  }
+
+  async recoverFromError(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.status !== 'ERROR') return
+
+    const tmuxSessionName = `aicli-${sessionId}`
+    try {
+      // [C2修复] 使用 execFile 替代 exec
+      await execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
+      // tmux session is alive — reset to IDLE
+      this.updateStatus(session, 'IDLE')
+    } catch {
+      // tmux session is dead — destroy
+      this.destroySession(sessionId)
     }
   }
 
@@ -54,6 +97,7 @@ export class SessionManager extends EventEmitter {
     cols: number,
     rows: number,
     adapterName: string,
+    ownerId: string,   // [C1修复] 传入会话归属用户ID
   ): Session {
     const existing = this.sessions.get(sessionId)
     if (existing) return existing
@@ -86,14 +130,17 @@ export class SessionManager extends EventEmitter {
 
     const session: Session = {
       sessionId,
+      ownerId,
       adapter,
       ptyProcess,
       status: 'IDLE',
       termClients: new Set(),
       ctrlClients: new Set(),
+      observeClients: new Set(),
       throttleTimer: null,
       outputBuffer: [],
       lastBroadcast: 0,
+      recorder: new SessionRecorder(),
     }
 
     ptyProcess.onData((data: string) => {
@@ -101,7 +148,6 @@ export class SessionManager extends EventEmitter {
     })
 
     ptyProcess.onExit(({ exitCode }) => {
-      // 信号3: exit code ≠ 0 → 强制 ERROR (ADR-008)
       if (exitCode !== 0) {
         this.updateStatus(session, 'ERROR', `Process exited with code ${exitCode}`)
       } else {
@@ -110,11 +156,27 @@ export class SessionManager extends EventEmitter {
     })
 
     this.sessions.set(sessionId, session)
+    this.sessionStore.set(sessionId, {
+      sessionId,
+      adapterName,
+      tmuxSessionName,
+      status: 'IDLE',
+      ownerId,
+      createdAt: new Date().toISOString(),
+      lastActive: new Date().toISOString(),
+    })
+    auditLog('SESSION_CREATE', undefined, { sessionId, adapter: adapterName })
     return session
   }
 
   private onData(session: Session, data: string): void {
-    session.outputBuffer.push(Buffer.from(data, 'utf-8'))
+    const buf = Buffer.from(data, 'utf-8')
+    session.outputBuffer.push(buf)
+
+    // Record output if recording is active
+    if (session.recorder.isRecording()) {
+      session.recorder.record(buf, Date.now())
+    }
 
     if (!session.throttleTimer) {
       session.throttleTimer = setTimeout(() => {
@@ -132,18 +194,27 @@ export class SessionManager extends EventEmitter {
 
     const merged = Buffer.concat(chunks)
 
-    // 广播给所有 termClients，含背压控制 (ADR-017)
+    // Broadcast to all termClients with backpressure control (ADR-017)
     for (const client of session.termClients) {
-      if (client.readyState !== 1) continue // WebSocket.OPEN = 1
+      if (client.readyState !== 1) continue
       if (client.bufferedAmount > BACKPRESSURE_THRESHOLD) {
-        continue // 丢弃当前帧，终端画面是覆盖式的
+        continue
+      }
+      client.send(merged)
+    }
+
+    // Also broadcast to observeClients (read-only)
+    for (const client of session.observeClients) {
+      if (client.readyState !== 1) continue
+      if (client.bufferedAmount > BACKPRESSURE_THRESHOLD) {
+        continue
       }
       client.send(merged)
     }
 
     session.lastBroadcast = Date.now()
 
-    // Debounced state fusion — avoid capture-pane storm (ADR-008)
+    // Debounced state fusion
     const text = stripAnsi(merged.toString('utf-8'))
     const existingTimer = this.fuseTimers.get(session.sessionId)
     if (!existingTimer) {
@@ -155,27 +226,23 @@ export class SessionManager extends EventEmitter {
   }
 
   private async fuseState(session: Session, text: string): Promise<void> {
-    // 信号1: 流式正则
     const candidate = session.adapter.parseStreamData(text)
     if (!candidate || candidate.confidence <= 0.5) return
 
-    // 信号2: 按需 capture-pane 二次确认 (ADR-012, ADR-016)
     const tmuxSessionName = `aicli-${session.sessionId}`
     try {
-      const { stdout } = await execAsync(
-        `tmux capture-pane -p -t ${tmuxSessionName}`,
+      // [C2修复] 使用 execFile 替代 exec
+      const { stdout } = await execFileAsync(
+        'tmux', ['capture-pane', '-p', '-t', tmuxSessionName],
       )
       const screenStatus = session.adapter.parseScreenSnapshot(stdout)
 
       if (screenStatus !== null) {
-        // 以 screenStatus 为准（高可信度）
         this.updateStatus(session, screenStatus)
       } else {
-        // screen 未匹配到确定状态，但 candidate 有一定置信度
         this.updateStatus(session, candidate.status)
       }
     } catch {
-      // capture-pane 失败（tmux session 可能已销毁），信任 candidate
       this.updateStatus(session, candidate.status)
     }
   }
@@ -191,6 +258,14 @@ export class SessionManager extends EventEmitter {
       status: newStatus,
       ...(message ? { message } : {}),
     })
+
+    // Persist status change
+    const persisted = this.sessionStore.get(session.sessionId)
+    if (persisted) {
+      persisted.status = newStatus
+      persisted.lastActive = new Date().toISOString()
+      this.sessionStore.set(session.sessionId, persisted)
+    }
   }
 
   attachClient(
@@ -204,9 +279,9 @@ export class SessionManager extends EventEmitter {
     if (termWs) {
       session.termClients.add(termWs)
 
-      // 发送当前屏幕内容以恢复终端画面
       const tmuxSessionName = `aicli-${sessionId}`
-      execAsync(`tmux capture-pane -p -t ${tmuxSessionName}`)
+      // [C2修复] 使用 execFile 替代 exec
+      execFileAsync('tmux', ['capture-pane', '-p', '-t', tmuxSessionName])
         .then(({ stdout }) => {
           if (stdout && termWs.readyState === 1) {
             termWs.send(stdout)
@@ -227,6 +302,30 @@ export class SessionManager extends EventEmitter {
     }
   }
 
+  attachObserver(sessionId: string, ws: WebSocket): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+
+    session.observeClients.add(ws)
+
+    // Send current screen to observer
+    const tmuxSessionName = `aicli-${sessionId}`
+    // [C2修复] 使用 execFile 替代 exec
+    execFileAsync('tmux', ['capture-pane', '-p', '-t', tmuxSessionName])
+      .then(({ stdout }) => {
+        if (stdout && ws.readyState === 1) {
+          ws.send(stdout)
+        }
+      })
+      .catch(() => {})
+  }
+
+  detachObserver(sessionId: string, ws: WebSocket): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    session.observeClients.delete(ws)
+  }
+
   detachClient(
     sessionId: string,
     termWs?: WebSocket,
@@ -237,7 +336,6 @@ export class SessionManager extends EventEmitter {
 
     if (termWs) session.termClients.delete(termWs)
     if (ctrlWs) session.ctrlClients.delete(ctrlWs)
-    // 不销毁 session — tmux 保活
   }
 
   resize(sessionId: string, cols: number, rows: number): void {
@@ -273,28 +371,50 @@ export class SessionManager extends EventEmitter {
   }
 
   async reapOrphanSessions(): Promise<void> {
-    // ADR-006: 仅回收 aicli-* 前缀中不在内存 Map 的 session
     try {
-      const { stdout } = await execAsync(
-        'tmux list-sessions -F "#{session_name}"',
+      // [C2修复] 使用 execFile 替代 exec，避免命令注入
+      const { stdout } = await execFileAsync(
+        'tmux', ['list-sessions', '-F', '#{session_name}'],
       )
-      const allSessions = stdout
+      const allTmuxSessions = stdout
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean)
 
-      const orphanSessions = allSessions.filter((name) => {
-        if (!name.startsWith('aicli-')) return false // 严禁触碰非 aicli- 前缀的宿主 tmux session
+      // Restore persisted sessions whose tmux sessions are still alive
+      for (const [sessionId, persisted] of this.sessionStore.entries()) {
+        if (this.sessions.has(sessionId)) continue
+        const tmuxName = persisted.tmuxSessionName
+        if (allTmuxSessions.includes(tmuxName)) {
+          const adapter = this.adapters.get(persisted.adapterName)
+          if (!adapter) continue
+          pinoLogger.info({ sessionId }, 'Restoring persisted session')
+          try {
+            this.createOrAttachSession(sessionId, 80, 24, persisted.adapterName, persisted.ownerId || '')
+          } catch (err) {
+            pinoLogger.warn({ err, sessionId }, 'Failed to restore persisted session')
+          }
+        } else {
+          // tmux session is gone — clean up persisted entry
+          this.sessionStore.delete(sessionId)
+        }
+      }
+
+      // Reap tmux sessions that have no in-memory counterpart after restoration
+      const orphanSessions = allTmuxSessions.filter((name) => {
+        if (!name.startsWith('aicli-')) return false
         const sessionId = name.slice('aicli-'.length)
         return !this.sessions.has(sessionId)
       })
 
       for (const name of orphanSessions) {
-        await execAsync(`tmux kill-session -t ${name}`)
+        // [C2修复] 使用 execFile 替代 exec，对 tmux session name 参数化传递
+        // name 来自 tmux list-sessions 输出，已通过 SAFE_SESSION_ID 正则校验
+        await execFileAsync('tmux', ['kill-session', '-t', name])
       }
 
       if (orphanSessions.length > 0) {
-        console.log(`Reaped ${orphanSessions.length} orphan tmux session(s)`)
+        pinoLogger.info({ count: orphanSessions.length }, 'Reaped orphan tmux session(s)')
       }
     } catch {
       // tmux list-sessions fails when no sessions exist — that's fine
@@ -317,6 +437,9 @@ export class SessionManager extends EventEmitter {
     for (const ws of session.ctrlClients) {
       ws.close()
     }
+    for (const ws of session.observeClients) {
+      ws.close()
+    }
 
     try {
       session.ptyProcess.kill()
@@ -325,6 +448,8 @@ export class SessionManager extends EventEmitter {
     }
 
     this.sessions.delete(sessionId)
+    this.sessionStore.delete(sessionId)
+    auditLog('SESSION_DESTROY', undefined, { sessionId })
   }
 
   getSessionIds(): string[] {
@@ -335,7 +460,57 @@ export class SessionManager extends EventEmitter {
     return this.sessions.has(sessionId)
   }
 
+  // [C1修复] 获取会话归属用户ID
+  getOwner(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.ownerId ?? null
+  }
+
   getAdapterForSession(sessionId: string): CLIAdapter | undefined {
     return this.sessions.get(sessionId)?.adapter
+  }
+
+  startRecording(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+    session.recorder.start()
+  }
+
+  stopRecording(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+    session.recorder.stop()
+  }
+
+  getRecording(sessionId: string, startTime?: number, endTime?: number) {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+    return session.recorder.getPlayback(startTime, endTime)
+  }
+
+  getRecordingStatus(sessionId: string) {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+    return {
+      recording: session.recorder.isRecording(),
+      duration: session.recorder.getDuration(),
+    }
+  }
+
+  destroy(): void {
+    if (this.errorRecoveryTimer) {
+      clearInterval(this.errorRecoveryTimer)
+      this.errorRecoveryTimer = null
+    }
+
+    // Destroy all active sessions (S10 fix)
+    for (const sessionId of [...this.sessions.keys()]) {
+      this.destroySession(sessionId)
+    }
+
+    // Clear all fuse timers
+    for (const timer of this.fuseTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.fuseTimers.clear()
   }
 }

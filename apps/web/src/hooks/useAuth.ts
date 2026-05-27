@@ -4,6 +4,13 @@ import { useSessionStore } from '../store/sessionStore'
 const API_BASE = import.meta.env.VITE_API_URL || window.location.origin
 
 const TOKEN_KEY = 'ai_cli_tokens'
+// 安全修复[C4]: 使用 sessionStorage 替代 localStorage 存储 token，避免持久化
+// TODO: 未来应迁移到 httpOnly cookie + SameSite 策略，防止 XSS 窃取 token
+const tokenStorage = {
+  getItem(key: string) { return sessionStorage.getItem(key) },
+  setItem(key: string, value: string) { sessionStorage.setItem(key, value) },
+  removeItem(key: string) { sessionStorage.removeItem(key) },
+}
 
 interface StoredTokens {
   accessToken: string
@@ -12,7 +19,7 @@ interface StoredTokens {
 
 function getStoredTokens(): StoredTokens | null {
   try {
-    const raw = localStorage.getItem(TOKEN_KEY)
+    const raw = tokenStorage.getItem(TOKEN_KEY)
     return raw ? JSON.parse(raw) : null
   } catch {
     return null
@@ -20,11 +27,11 @@ function getStoredTokens(): StoredTokens | null {
 }
 
 function storeTokens(access: string, refresh: string) {
-  localStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken: access, refreshToken: refresh }))
+  tokenStorage.setItem(TOKEN_KEY, JSON.stringify({ accessToken: access, refreshToken: refresh }))
 }
 
 function clearStoredTokens() {
-  localStorage.removeItem(TOKEN_KEY)
+  tokenStorage.removeItem(TOKEN_KEY)
 }
 
 function parseJwtExp(token: string): number {
@@ -104,11 +111,32 @@ export function useAuth() {
 
   const loadStoredAuth = useCallback(() => {
     const stored = getStoredTokens()
-    if (stored) {
+    if (!stored) return false
+
+    const accessExp = parseJwtExp(stored.accessToken)
+    const refreshExp = parseJwtExp(stored.refreshToken)
+    const now = Date.now()
+
+    // Access token still valid
+    if (accessExp > now) {
       setTokens(stored.accessToken, stored.refreshToken)
       scheduleTokenRenewal(stored.accessToken)
       return true
     }
+
+    // Access expired but refresh still valid — try refresh immediately
+    if (refreshExp > now) {
+      setTokens(stored.accessToken, stored.refreshToken)
+      // Trigger refresh in background
+      doRefreshTokenRef.current?.().catch(() => {
+        clearStoredTokens()
+        setTokens('', '')
+      })
+      return true
+    }
+
+    // Both expired — clear
+    clearStoredTokens()
     return false
   }, [setTokens, scheduleTokenRenewal])
 

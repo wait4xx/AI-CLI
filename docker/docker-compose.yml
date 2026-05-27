@@ -19,6 +19,10 @@ services:
     security_opt:
       - seccomp=./seccomp.json
       - no-new-privileges:true
+    # [W12修复] 添加资源限制防止容器耗尽宿主机资源
+    mem_limit: 512m
+    cpus: '2.0'
+    pids_limit: 256
     cap_drop:
       - ALL
     cap_add:
@@ -39,6 +43,7 @@ services:
       target: deps
     ports:
       - "${PORT:-3000}:3000"
+    # [W15修复] ⚠️ 以下凭证仅用于开发环境，严禁用于生产部署！
     environment:
       - PORT=3000
       - JWT_SECRET=dev-secret-min-32-characters-long-here

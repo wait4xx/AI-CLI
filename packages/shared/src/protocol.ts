@@ -3,7 +3,6 @@
 // ============================================================
 
 // Terminal 通道应用层 Binary 心跳（ADR-014）
-// 浏览器 WS API 不支持协议级 Ping/Pong 帧（Opcode 0x9/0xA）
 export const TERM_PING = 0x00
 export const TERM_PONG = 0x01
 
@@ -29,6 +28,10 @@ export type ControlClientMessage =
   | { type: 'RESIZE'; sessionId: string; cols: number; rows: number }
   | { type: 'QUICK_ACTION'; sessionId: string; payload: string }
   | { type: 'INJECT_CODE'; sessionId: string; code: string }
+  | { type: 'START_RECORDING'; sessionId: string }
+  | { type: 'STOP_RECORDING'; sessionId: string }
+  | { type: 'GET_RECORDING'; sessionId: string; startTime?: number; endTime?: number }
+  | { type: 'OBSERVE_SESSION'; sessionId: string }
 
 // Control Channel 服务端 → 客户端消息
 export type ControlServerMessage =
@@ -38,6 +41,8 @@ export type ControlServerMessage =
   | { type: 'STATUS_UPDATE'; sessionId: string; status: AgentStatus; message?: string }
   | { type: 'SESSION_READY'; sessionId: string }
   | { type: 'ERROR'; message: string }
+  | { type: 'RECORDING_DATA'; sessionId: string; data: Array<{ data: number[]; timestamp: number }> }
+  | { type: 'RECORDING_STATUS'; sessionId: string; recording: boolean; duration: number }
 
 // JWT Token 对
 export interface TokenPair {

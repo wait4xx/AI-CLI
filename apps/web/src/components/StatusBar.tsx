@@ -10,7 +10,7 @@ const agentStatusConfig: Record<AgentStatus, { label: string; className: string;
 }
 
 export function StatusBar({ actionsSlot }: { actionsSlot?: React.ReactNode }) {
-  const { connectionPhase, agentStatus, sessionId } = useSessionStore()
+  const { connectionPhase, agentStatus, sessions, activeSessionIndex } = useSessionStore()
 
   const dotColor =
     connectionPhase === 'CONNECTED'
@@ -37,9 +37,9 @@ export function StatusBar({ actionsSlot }: { actionsSlot?: React.ReactNode }) {
 
       <span className="flex-1" />
 
-      {sessionId && (
+      {sessions[activeSessionIndex] && (
         <span className="text-gray-500 truncate max-w-[120px] text-[11px]">
-          {sessionId.slice(0, 8)}
+          {sessions[activeSessionIndex].label}
         </span>
       )}
 
