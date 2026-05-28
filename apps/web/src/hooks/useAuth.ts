@@ -5,7 +5,7 @@ const API_BASE = import.meta.env.VITE_API_URL || window.location.origin
 
 const TOKEN_KEY = 'ai_cli_tokens'
 // 安全修复[C4]: 使用 sessionStorage 替代 localStorage 存储 token，避免持久化
-// TODO: 未来应迁移到 httpOnly cookie + SameSite 策略，防止 XSS 窃取 token
+// NOTE: 未来可迁移到 httpOnly cookie + SameSite 策略，进一步提升 XSS 防护
 const tokenStorage = {
   getItem(key: string) { return sessionStorage.getItem(key) },
   setItem(key: string, value: string) { sessionStorage.setItem(key, value) },
@@ -22,6 +22,7 @@ function getStoredTokens(): StoredTokens | null {
     const raw = tokenStorage.getItem(TOKEN_KEY)
     return raw ? JSON.parse(raw) : null
   } catch {
+    // Ignore — corrupted storage data, treat as no stored tokens
     return null
   }
 }
@@ -40,6 +41,7 @@ function parseJwtExp(token: string): number {
     const decoded = JSON.parse(atob(payload))
     return decoded.exp * 1000
   } catch {
+    // Ignore — malformed JWT, treat as already expired
     return 0
   }
 }

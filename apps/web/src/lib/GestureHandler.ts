@@ -2,6 +2,19 @@
  * GestureHandler — 独立手势处理层（纯 TypeScript 类）
  *
  * 双指缩放字体 + 长按粘贴。
+ *
+ * **Event priority coordination with MobileKeyboardAdapter:**
+ * GestureHandler registers touch listeners on the same container element
+ * as MobileKeyboardAdapter. To prevent conflicts:
+ * - During a pinch gesture, GestureHandler calls
+ *   `MobileKeyboardAdapter.setSuppressFocus(true)` via `onPinchStart`
+ *   so that the next touchend/click does NOT trigger the hidden input focus.
+ * - When the pinch ends, `onPinchEnd` calls `setSuppressFocus(false)`
+ *   to restore normal keyboard-trigger behavior.
+ * - Long-press (single-finger) is cancelled once the second finger lands
+ *   (pinch start), preventing false long-press triggers mid-pinch.
+ * - MobileKeyboardAdapter's `handleContainerTouch` checks `e.touches.length >= 2`
+ *   and skips focus when multi-touch is detected.
  */
 
 const MIN_FONT_SIZE = 10

@@ -102,12 +102,19 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
     const token = useSessionStore.getState().accessToken
     if (!token) return
 
+    // Cancel any in-progress tree request
+    if (abortRef.current) {
+      abortRef.current.abort()
+    }
+    const controller = new AbortController()
+    abortRef.current = controller
+
     setState(prev => ({ ...prev, loading: true, error: null }))
 
     try {
       const res = await fetch(
         `${API_BASE}/api/fs/file?path=${encodeURIComponent(entry.path)}`,
-        { headers: { Authorization: `Bearer ${token}` } },
+        { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal },
       )
       if (!res.ok) {
         const data = await res.json().catch(() => ({ error: 'Request failed' }))
@@ -117,6 +124,7 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
       onFileSelect(entry.path, data.content, data.language)
       setOpen(false)
     } catch (err) {
+      if (controller.signal.aborted) return
       setState(prev => ({ ...prev, loading: false, error: (err as Error).message }))
     }
   }, [onFileSelect, fetchTree])
@@ -218,7 +226,7 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
                 </button>
               ))}
 
-              {!state.loading && !state.error && state.entries.length === 0 && !state.currentPath && (
+              {!state.loading && !state.error && state.entries.length === 0 && (
                 <p className="text-center text-gray-500 text-sm py-8">Empty directory</p>
               )}
             </div>

@@ -32,7 +32,7 @@ A lightweight gateway that wraps CLI-based AI coding tools behind a responsive w
 
 | Layer | Technology |
 |-------|-----------|
-| Server | Node.js 20, Fastify 4, node-pty, tmux |
+| Server | Node.js 20, Fastify 5, node-pty, tmux |
 | Frontend | React 18, Vite, xterm.js (WebGL + Canvas fallback), CodeMirror 6 |
 | State | Zustand |
 | Auth | JWT dual-token (access 15min + refresh 7d) |
@@ -157,6 +157,11 @@ See [`packages/shared/src/protocol.ts`](packages/shared/src/protocol.ts) for ful
 2. Control WS → AUTH → AUTH_OK → INIT_SESSION → SESSION_READY
 
 **Close codes:** `4001` = auth failed (triggers token refresh), `4002` = protocol mismatch (triggers page reload)
+
+**Additional control messages:**
+- `OBSERVE_SESSION` — Attach as read-only observer (receives terminal output but cannot send input)
+- `START_RECORDING` / `STOP_RECORDING` / `GET_RECORDING` — Session recording for playback
+- `RECORDING_DATA` / `RECORDING_STATUS` — Server responses for recording operations
 
 ## Adding a CLI Adapter
 

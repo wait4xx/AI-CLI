@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws'
 import jwt from 'jsonwebtoken'
-import { JwtPayload, PROTOCOL_VERSION, WS_CLOSE_CODE, TERM_PING, TERM_PONG, ControlClientMessage } from '@ai-cli/shared'
+import { JwtPayload, PROTOCOL_VERSION, WS_CLOSE_CODE, TERM_PING, TERM_PONG, TERM_COLS_MIN, TERM_COLS_MAX, TERM_ROWS_MIN, TERM_ROWS_MAX, ControlClientMessage } from '@ai-cli/shared'
 import { SessionManager } from './SessionManager.js'
 import { pinoLogger } from '../lib/logger.js'
 
@@ -9,9 +9,15 @@ enum WSState {
   AUTHENTICATED,
 }
 
-const AUTH_TIMEOUT_MS = 5000
+const AUTH_TIMEOUT_MS = 15000
 const PING_INTERVAL_MS = 30000
 
+/**
+ * WSGateway — WebSocket connection handler for terminal and control channels.
+ *
+ * Manages authentication (JWT), terminal data forwarding,
+ * control message dispatch, and keep-alive probes.
+ */
 export class WSGateway {
   private sessionManager: SessionManager
   private jwtSecret: string
@@ -27,8 +33,15 @@ export class WSGateway {
 
   // ========== Terminal Channel ==========
 
+  /**
+   * Handle a new terminal WebSocket connection.
+   * Performs auth handshake, then accepts ATTACH_SESSION before switching to binary mode.
+   *
+   * @param ws - The incoming WebSocket connection
+   */
   handleTerminalConnection(ws: WebSocket): void {
     let state = WSState.UNAUTHENTICATED
+    let currentUser: JwtPayload | null = null
     let sessionId: string | null = null
 
     pinoLogger.info('Terminal WS connected')
@@ -48,12 +61,14 @@ export class WSGateway {
             this.verifyAuth(ws, msg, (payload) => {
               clearTimeout(authTimeout)
               state = WSState.AUTHENTICATED
+              currentUser = payload
               pinoLogger.info({ sessionId: payload.userId }, 'Terminal WS authenticated')
               ws.send(JSON.stringify({ type: 'AUTH_OK' }))
             })
           }
-        } catch {
+        } catch (err) {
           // invalid JSON in UNAUTHENTICATED state, discard
+          pinoLogger.warn({ err }, 'Terminal WS invalid message in unauthenticated state')
         }
         return
       }
@@ -67,13 +82,24 @@ export class WSGateway {
               ws.send(JSON.stringify({ type: 'ERROR', message: 'Session not found' }))
               return
             }
+            // [S2修复] 校验 session 归属
+            if (!currentUser) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Not authenticated' }))
+              return
+            }
+            const owner = this.sessionManager.getOwner(msg.sessionId)
+            if (owner && owner !== currentUser.userId) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
+              return
+            }
             sessionId = msg.sessionId
             pinoLogger.info({ sessionId }, 'Terminal WS attached to session')
             this.sessionManager.attachClient(sessionId!, ws, undefined)
             // Switch to binary mode — no more JSON expected
           }
-        } catch {
+        } catch (err) {
           // binary data before ATTACH, discard
+          pinoLogger.warn({ err }, 'Terminal WS invalid message before ATTACH')
         }
         return
       }
@@ -102,6 +128,12 @@ export class WSGateway {
 
   // ========== Control Channel ==========
 
+  /**
+   * Handle a new control WebSocket connection.
+   * Performs auth handshake, then dispatches JSON control messages.
+   *
+   * @param ws - The incoming WebSocket connection
+   */
   handleControlConnection(ws: WebSocket): void {
     let state = WSState.UNAUTHENTICATED
     let currentUser: JwtPayload | null = null
@@ -170,13 +202,42 @@ export class WSGateway {
       return
     }
 
+    if (!msg.accessToken) {
+      pinoLogger.warn('WS auth failed — missing accessToken')
+      ws.close(WS_CLOSE_CODE.AUTH_FAILED, 'Missing access token')
+      return
+    }
+
     try {
-      const decoded = jwt.verify(msg.accessToken!, this.jwtSecret) as JwtPayload
+      const decoded = jwt.verify(msg.accessToken, this.jwtSecret) as JwtPayload
       onSuccess(decoded)
     } catch {
       pinoLogger.warn('WS auth failed — invalid token')
       ws.close(WS_CLOSE_CODE.AUTH_FAILED, 'Invalid token')
     }
+  }
+
+  // [Q3修复] 提取公共的 session 校验逻辑
+  private validateSessionAccess(
+    ws: WebSocket,
+    sessionId: string,
+    currentUser: JwtPayload | null,
+  ): boolean {
+    if (ws.readyState !== WebSocket.OPEN) return false
+    if (!this.sessionManager.hasSession(sessionId)) {
+      ws.send(JSON.stringify({ type: 'ERROR', message: 'Session not found' }))
+      return false
+    }
+    if (!currentUser) {
+      ws.send(JSON.stringify({ type: 'ERROR', message: 'Not authenticated' }))
+      return false
+    }
+    const owner = this.sessionManager.getOwner(sessionId)
+    if (!owner || owner !== currentUser.userId) {
+      ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
+      return false
+    }
+    return true
   }
 
   // ========== Control Message Dispatch ==========
@@ -188,19 +249,8 @@ export class WSGateway {
     currentUser: JwtPayload | null,  // [C1修复] 当前认证用户，用于会话权限校验
     setSessionId: (sid: string) => void,
   ): void {
-    // [C1修复] 辅助方法：校验 sessionId 是否归属于 currentUser
-    const checkSessionOwnership = (sessionId: string): boolean => {
-      if (!currentUser) return false
-      const owner = this.sessionManager.getOwner(sessionId)
-      if (!owner) return false
-      return owner === currentUser.userId
-    }
 
-    // [C3修复] 终端尺寸范围限制
-    const COLS_MIN = 1
-    const COLS_MAX = 500
-    const ROWS_MIN = 1
-    const ROWS_MAX = 200
+    // [C3修复] 终端尺寸范围限制（使用 shared 常量）
 
     switch (msg.type) {
       case 'PING':
@@ -225,8 +275,8 @@ export class WSGateway {
       case 'INIT_SESSION': {
         const { sessionId, cols, rows, adapter } = msg
         // [C3修复] 校验终端尺寸参数范围
-        const safeCols = Math.max(COLS_MIN, Math.min(COLS_MAX, Math.floor(cols) || 80))
-        const safeRows = Math.max(ROWS_MIN, Math.min(ROWS_MAX, Math.floor(rows) || 24))
+        const safeCols = Math.max(TERM_COLS_MIN, Math.min(TERM_COLS_MAX, Math.floor(cols) || 80))
+        const safeRows = Math.max(TERM_ROWS_MIN, Math.min(TERM_ROWS_MAX, Math.floor(rows) || 24))
         try {
           // [C1修复] 传入 ownerId (currentUser.userId)
           if (!currentUser) {
@@ -246,15 +296,8 @@ export class WSGateway {
 
       case 'ATTACH_SESSION': {
         const { sessionId } = msg
-        if (!this.sessionManager.hasSession(sessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Session not found' }))
-          return
-        }
-        // [C1修复] 校验会话归属
-        if (!checkSessionOwnership(sessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
-          return
-        }
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!this.validateSessionAccess(ws, sessionId, currentUser)) return
         try {
           this.sessionManager.attachClient(sessionId, undefined, ws)
           setSessionId(sessionId)
@@ -270,25 +313,25 @@ export class WSGateway {
           ws.send(JSON.stringify({ type: 'ERROR', message: 'No active session' }))
           break
         }
+        // [R8修复] RESIZE 也需要校验会话归属
+        if (!this.validateSessionAccess(ws, currentSessionId, currentUser)) break
         if (msg.cols && msg.rows) {
           // [C3修复] 校验终端尺寸参数范围
-          const safeCols = Math.max(COLS_MIN, Math.min(COLS_MAX, Math.floor(msg.cols) || 80))
-          const safeRows = Math.max(ROWS_MIN, Math.min(ROWS_MAX, Math.floor(msg.rows) || 24))
+          const safeCols = Math.max(TERM_COLS_MIN, Math.min(TERM_COLS_MAX, Math.floor(msg.cols) || 80))
+          const safeRows = Math.max(TERM_ROWS_MIN, Math.min(TERM_ROWS_MAX, Math.floor(msg.rows) || 24))
           try {
             this.sessionManager.resize(currentSessionId, safeCols, safeRows)
-          } catch {
+          } catch (err) {
             // session may have been destroyed
+            pinoLogger.warn({ err, sessionId: currentSessionId }, 'RESIZE failed — session may have been destroyed')
           }
         }
         break
       }
 
       case 'QUICK_ACTION': {
-        // [C1修复] 校验会话归属
-        if (!currentSessionId || !checkSessionOwnership(currentSessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'No session or permission denied' }))
-          break
-        }
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!currentSessionId || !this.validateSessionAccess(ws, currentSessionId, currentUser)) break
         if (msg.payload) {
           this.sessionManager.sendQuickAction(currentSessionId, msg.payload)
         }
@@ -296,9 +339,12 @@ export class WSGateway {
       }
 
       case 'INJECT_CODE': {
-        // [C1修复] 校验会话归属
-        if (!currentSessionId || !checkSessionOwnership(currentSessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'No session or permission denied' }))
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!currentSessionId || !this.validateSessionAccess(ws, currentSessionId, currentUser)) break
+        // [Q2修复] 服务端 INJECT_CODE 大小兜底校验（1MB）
+        const INJECT_CODE_MAX_SIZE = 1048576
+        if (msg.code && Buffer.byteLength(msg.code, 'utf-8') > INJECT_CODE_MAX_SIZE) {
+          ws.send(JSON.stringify({ type: 'ERROR', message: 'INJECT_CODE exceeds maximum size (1MB)' }))
           break
         }
         if (msg.code) {
@@ -309,15 +355,8 @@ export class WSGateway {
 
       case 'OBSERVE_SESSION': {
         const { sessionId } = msg
-        if (!this.sessionManager.hasSession(sessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Session not found' }))
-          return
-        }
-        // [C1修复] 校验会话归属
-        if (!checkSessionOwnership(sessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
-          return
-        }
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!this.validateSessionAccess(ws, sessionId, currentUser)) return
         try {
           this.sessionManager.attachObserver(sessionId, ws)
           setSessionId(sessionId)
@@ -334,11 +373,8 @@ export class WSGateway {
           ws.send(JSON.stringify({ type: 'ERROR', message: 'No active session' }))
           break
         }
-        // [C1修复] 校验会话归属
-        if (!checkSessionOwnership(currentSessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
-          break
-        }
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!this.validateSessionAccess(ws, currentSessionId, currentUser)) break
         try {
           this.sessionManager.startRecording(currentSessionId)
           const status = this.sessionManager.getRecordingStatus(currentSessionId)
@@ -355,11 +391,8 @@ export class WSGateway {
           ws.send(JSON.stringify({ type: 'ERROR', message: 'No active session' }))
           break
         }
-        // [C1修复] 校验会话归属
-        if (!checkSessionOwnership(currentSessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
-          break
-        }
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!this.validateSessionAccess(ws, currentSessionId, currentUser)) break
         try {
           this.sessionManager.stopRecording(currentSessionId)
           const status = this.sessionManager.getRecordingStatus(currentSessionId)
@@ -373,14 +406,12 @@ export class WSGateway {
 
       case 'GET_RECORDING': {
         const { sessionId, startTime, endTime } = msg
-        // [C1修复] 校验会话归属
-        if (!checkSessionOwnership(sessionId)) {
-          ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
-          break
-        }
+        // [Q3修复] 使用 validateSessionAccess 统一校验
+        if (!this.validateSessionAccess(ws, sessionId, currentUser)) break
         try {
           const chunks = this.sessionManager.getRecording(sessionId, startTime, endTime)
-          const data = chunks.map((c) => ({ data: Array.from(c.data), timestamp: c.timestamp }))
+          // [M10修复] 使用 base64 替代 Array.from 避免内存膨胀
+          const data = chunks.map((c) => ({ data: c.data.toString('base64'), timestamp: c.timestamp }))
           ws.send(JSON.stringify({ type: 'RECORDING_DATA', sessionId, data }))
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : 'Unknown error'
@@ -418,5 +449,16 @@ export class WSGateway {
       clearInterval(timer)
       this.pingTimers.delete(ws)
     }
+  }
+
+  /**
+   * Destroy the gateway: close all WebSocket connections and clear keep-alive timers.
+   * Call on server shutdown.
+   */
+  destroy(): void {
+    for (const timer of this.pingTimers.values()) {
+      clearInterval(timer)
+    }
+    this.pingTimers.clear()
   }
 }

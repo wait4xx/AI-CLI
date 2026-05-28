@@ -27,6 +27,7 @@ interface SessionState {
   // Terminal settings
   fontSize: number
   theme: 'dark' | 'light'
+  activeAdapter: string
 
   // WS function refs (set by TerminalContainer)
   sendInjectCode: ((code: string) => void) | null
@@ -39,6 +40,7 @@ interface SessionState {
   setTokens: (accessToken: string, refreshToken: string) => void
   setFontSize: (size: number) => void
   setTheme: (theme: 'dark' | 'light') => void
+  setActiveAdapter: (adapter: string) => void
   addSession: () => void
   removeSession: (index: number) => void
   updateSessionStatus: (sessionId: string, status: AgentStatus) => void
@@ -57,6 +59,7 @@ const initialState = {
   refreshToken: null as string | null,
   fontSize: 14,
   theme: 'dark' as const,
+  activeAdapter: 'claude',
   sendInjectCode: null as ((code: string) => void) | null,
 }
 
@@ -106,9 +109,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setTheme: (theme) => set({ theme }),
 
+  setActiveAdapter: (adapter) => {
+    // Validate adapter value against known adapters
+    const VALID_ADAPTERS = new Set(['claude', 'aider', 'shell'])
+    const safe = VALID_ADAPTERS.has(adapter) ? adapter : 'claude'
+    set({ activeAdapter: safe })
+  },
+
   addSession: () => {
-    const newId = crypto.randomUUID()
+    // [R3修复] 限制最大会话数量，防止资源耗尽
+    const MAX_SESSIONS = 10
     const { sessions } = get()
+    if (sessions.length >= MAX_SESSIONS) return
+    const newId = crypto.randomUUID()
     set({
       sessions: [...sessions, { id: newId, status: 'IDLE', label: newId.slice(0, 8) }],
     })
@@ -151,5 +164,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
-  reset: () => set(initialState),
+  // [M7修复] 使用展开运算符创建新对象，避免引用问题
+  reset: () => set({ ...initialState }),
 }))

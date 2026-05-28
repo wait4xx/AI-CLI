@@ -6,6 +6,7 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "e2e": "playwright test",
     "prepare": "husky",
     "format": "prettier --write ."
   },
@@ -20,6 +21,7 @@
   },
   "prettier": "@ai-cli/prettier-config",
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "husky": "^9.0.0",
     "lint-staged": "^15.2.0",
     "prettier": "^3.2.0",

@@ -1,5 +1,7 @@
 import fs from 'fs'
 import path from 'path'
+import { pinoLogger } from '../lib/logger.js'
+import { getConfig } from '../lib/config.js'
 
 export interface PersistedSession {
   sessionId: string
@@ -11,18 +13,21 @@ export interface PersistedSession {
   lastActive: string
 }
 
-const SESSIONS_FILE_PATH = path.join(
-  process.env.PROJECT_ROOT || '/workspace',
-  '.sessions.json',
-)
+function getSessionsFilePath(): string {
+  return path.join(getConfig().PROJECT_ROOT, '.sessions.json')
+}
 
 export class SessionStore {
   private data = new Map<string, PersistedSession>()
+  private dirty = false
+  private saveTimer: ReturnType<typeof setTimeout> | null = null
+  private static SAVE_DEBOUNCE_MS = 500 // Debounce saves to reduce disk I/O
 
   load(): void {
     try {
-      if (fs.existsSync(SESSIONS_FILE_PATH)) {
-        const raw = fs.readFileSync(SESSIONS_FILE_PATH, 'utf-8')
+      const sessionsFilePath = getSessionsFilePath()
+      if (fs.existsSync(sessionsFilePath)) {
+        const raw = fs.readFileSync(sessionsFilePath, 'utf-8')
         const parsed: Record<string, PersistedSession> = JSON.parse(raw)
         for (const [key, value] of Object.entries(parsed)) {
           this.data.set(key, value)
@@ -33,9 +38,10 @@ export class SessionStore {
     }
   }
 
-  save(): void {
+  private writeToFile(): void {
     try {
-      const dir = path.dirname(SESSIONS_FILE_PATH)
+      const sessionsFilePath = getSessionsFilePath()
+      const dir = path.dirname(sessionsFilePath)
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true })
       }
@@ -43,9 +49,40 @@ export class SessionStore {
       for (const [key, value] of this.data.entries()) {
         obj[key] = value
       }
-      fs.writeFileSync(SESSIONS_FILE_PATH, JSON.stringify(obj, null, 2), 'utf-8')
-    } catch {
-      // Best-effort persistence
+      // [S5修复] write-then-rename 原子写入，防止写入中途崩溃导致数据损坏
+      const tmpPath = sessionsFilePath + '.tmp'
+      fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf-8')
+      fs.renameSync(tmpPath, sessionsFilePath)
+      this.dirty = false
+    } catch (err) {
+      pinoLogger.error({ err }, 'Failed to persist session store')
+    }
+  }
+
+  /**
+   * Schedule a debounced save. Multiple rapid mutations coalesce into one write.
+   */
+  private scheduleSave(): void {
+    this.dirty = true
+    if (this.saveTimer) return
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      if (this.dirty) {
+        this.writeToFile()
+      }
+    }, SessionStore.SAVE_DEBOUNCE_MS)
+  }
+
+  /**
+   * Force immediate save (e.g., on shutdown).
+   */
+  flush(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer)
+      this.saveTimer = null
+    }
+    if (this.dirty) {
+      this.writeToFile()
     }
   }
 
@@ -55,12 +92,12 @@ export class SessionStore {
 
   set(sessionId: string, data: PersistedSession): void {
     this.data.set(sessionId, data)
-    this.save()
+    this.scheduleSave()
   }
 
   delete(sessionId: string): boolean {
     const existed = this.data.delete(sessionId)
-    if (existed) this.save()
+    if (existed) this.scheduleSave()
     return existed
   }
 

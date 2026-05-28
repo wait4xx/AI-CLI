@@ -7,3 +7,7 @@ dist
 *.tsbuildinfo
 chat-export-*.json
 .claude/
+# [L12修复] 敏感运行时文件
+.users.json
+.sessions.json
+.audit.log

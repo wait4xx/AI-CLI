@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, memo } from 'react'
 import { Plus, X } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
 import type { AgentStatus } from '@ai-cli/shared'
@@ -10,7 +10,7 @@ const STATUS_COLORS: Record<AgentStatus, string> = {
   ERROR: 'bg-red-400',
 }
 
-export function SessionTabs() {
+export const SessionTabs = memo(function SessionTabs() {
   const sessions = useSessionStore((s) => s.sessions)
   const activeSessionIndex = useSessionStore((s) => s.activeSessionIndex)
   const addSession = useSessionStore((s) => s.addSession)
@@ -71,4 +71,4 @@ export function SessionTabs() {
       </button>
     </div>
   )
-}
+})

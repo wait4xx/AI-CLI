@@ -15,9 +15,11 @@
   "scripts": {
     "dev": "tsc --watch",
     "build": "tsc",
+    "test": "vitest run",
     "lint": "eslint src/"
   },
   "devDependencies": {
-    "typescript": "^5.4.2"
+    "typescript": "^5.4.2",
+    "vitest": "^3.1.1"
   }
 }

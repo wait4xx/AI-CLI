@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Loader2 } from 'lucide-react'
 
 interface ConnectionOverlayProps {
@@ -13,7 +14,7 @@ const phaseLabels: Record<string, string> = {
   CONNECTED: '已连接',
 }
 
-export function ConnectionOverlay({ phase, reconnectCount, cachedScreen }: ConnectionOverlayProps) {
+export const ConnectionOverlay = memo(function ConnectionOverlay({ phase, reconnectCount, cachedScreen }: ConnectionOverlayProps) {
   if (phase === 'CONNECTED') return null
 
   return (
@@ -34,4 +35,4 @@ export function ConnectionOverlay({ phase, reconnectCount, cachedScreen }: Conne
       </div>
     </div>
   )
-}
+})

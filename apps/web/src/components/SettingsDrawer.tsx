@@ -7,8 +7,16 @@ const { Root, Trigger, Portal, Overlay, Content, Title, Close } = Drawer
 export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
   const fontSize = useSessionStore((s) => s.fontSize)
   const theme = useSessionStore((s) => s.theme)
+  const activeAdapter = useSessionStore((s) => s.activeAdapter)
   const setFontSize = useSessionStore((s) => s.setFontSize)
   const setTheme = useSessionStore((s) => s.setTheme)
+  const setActiveAdapter = useSessionStore((s) => s.setActiveAdapter)
+
+  const adapters = [
+    { id: 'claude', label: 'Claude' },
+    { id: 'aider', label: 'Aider' },
+    { id: 'shell', label: 'Shell' },
+  ] as const
 
   return (
     <Root>
@@ -64,6 +72,21 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
                 >
                   Light
                 </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-300">Adapter</span>
+              <div className="flex gap-1">
+                {adapters.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => setActiveAdapter(a.id)}
+                    className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${activeAdapter === a.id ? 'bg-blue-600 text-white' : 'bg-dark-border text-gray-400 hover:text-gray-200'}`}
+                  >
+                    {a.label}
+                  </button>
+                ))}
               </div>
             </div>
           </div>

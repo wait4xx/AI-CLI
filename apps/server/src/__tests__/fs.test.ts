@@ -33,7 +33,7 @@ describe('FS Routes', () => {
     await fs.writeFile('/tmp/ai-cli-test-workspace/subdir/nested.py', 'print("hi")')
 
     app = await buildServer()
-    ensureAdminUser()
+    await ensureAdminUser()
 
     // Get access token
     const loginRes = await app.inject({
@@ -110,5 +110,106 @@ describe('FS Routes', () => {
       url: '/api/fs/tree?path=',
     })
     expect(res.statusCode).toBe(401)
+  })
+
+  it('should write file via PUT', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/fs/file',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { path: 'written.txt', content: 'new content' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().success).toBe(true)
+
+    // Verify file was written
+    const readRes = await app.inject({
+      method: 'GET',
+      url: '/api/fs/file?path=written.txt',
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(readRes.statusCode).toBe(200)
+    expect(readRes.json().content).toBe('new content')
+  })
+
+  it('should reject writing dangerous file types', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/fs/file',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { path: 'malware.exe', content: 'MZ...' },
+    })
+    expect(res.statusCode).toBe(403)
+    expect(res.json().error).toContain('not allowed')
+  })
+
+  it('should reject oversized file content', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/fs/file',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { path: 'huge.txt', content: 'x'.repeat(1048577) },
+    })
+    expect(res.statusCode).toBe(413)
+  })
+
+  it('should reject PUT without path', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/fs/file',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { content: 'data' },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('should block path traversal in write path', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/fs/file',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { path: '../../../tmp/evil.txt', content: 'hack' },
+    })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('should block null byte in path', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/fs/file',
+      query: { path: 'test.txt\x00.exe' },
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(res.statusCode).toBe(403)
+  })
+
+  it('should reject writing to non-directory path', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/fs/tree',
+      query: { path: 'test.txt' },
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('should create subdirectories when writing to nested path', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/fs/file',
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { path: 'deep/nested/dir/file.ts', content: 'const x = 1' },
+    })
+    expect(res.statusCode).toBe(200)
+
+    const readRes = await app.inject({
+      method: 'GET',
+      url: '/api/fs/file',
+      query: { path: 'deep/nested/dir/file.ts' },
+      headers: { authorization: `Bearer ${accessToken}` },
+    })
+    expect(readRes.statusCode).toBe(200)
+    expect(readRes.json().content).toBe('const x = 1')
+    expect(readRes.json().language).toBe('typescript')
   })
 })

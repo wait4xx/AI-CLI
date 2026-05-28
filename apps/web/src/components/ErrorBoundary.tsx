@@ -9,16 +9,17 @@ interface ErrorBoundaryProps {
 interface ErrorBoundaryState {
   hasError: boolean
   error: Error | null
+  retryCount: number
 }
 
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props)
-    this.state = { hasError: false, error: null }
+    this.state = { hasError: false, error: null, retryCount: 0 }
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error }
+    return { hasError: true, error, retryCount: 0 }
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
@@ -26,7 +27,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   private handleReset = () => {
-    this.setState({ hasError: false, error: null })
+    // [L4修复] 添加重试计数器，超过 3 次提示刷新
+    const next = this.state.retryCount + 1
+    if (next >= 3) {
+      this.setState({ hasError: true, error: this.state.error, retryCount: next })
+      return
+    }
+    this.setState({ hasError: false, error: null, retryCount: next })
   }
 
   render() {
@@ -40,15 +47,31 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
           <div className="text-center max-w-sm">
             <div className="text-4xl mb-4">⚠️</div>
             <h2 className="text-lg font-medium text-gray-100 mb-2">应用发生了错误</h2>
-            <p className="text-sm text-gray-400 mb-4">
-              {this.state.error?.message || '发生了未知错误'}
-            </p>
-            <button
-              onClick={this.handleReset}
-              className="px-4 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors"
-            >
-              重试
-            </button>
+            {this.state.retryCount >= 3 ? (
+              <>
+                <p className="text-sm text-gray-400 mb-4">
+                  多次重试失败，请刷新页面
+                </p>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="px-4 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors"
+                >
+                  刷新页面
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-gray-400 mb-4">
+                  {this.state.error?.message || '发生了未知错误'}
+                </p>
+                <button
+                  onClick={this.handleReset}
+                  className="px-4 py-2 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors"
+                >
+                  重试
+                </button>
+              </>
+            )}
           </div>
         </div>
       )

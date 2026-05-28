@@ -41,8 +41,14 @@ export type ControlServerMessage =
   | { type: 'STATUS_UPDATE'; sessionId: string; status: AgentStatus; message?: string }
   | { type: 'SESSION_READY'; sessionId: string }
   | { type: 'ERROR'; message: string }
-  | { type: 'RECORDING_DATA'; sessionId: string; data: Array<{ data: number[]; timestamp: number }> }
+  | { type: 'RECORDING_DATA'; sessionId: string; data: Array<{ data: string; timestamp: number }> }  // data is base64-encoded
   | { type: 'RECORDING_STATUS'; sessionId: string; recording: boolean; duration: number }
+
+// 终端尺寸范围常量（SessionManager 和 WSGateway 共用）
+export const TERM_COLS_MIN = 1
+export const TERM_COLS_MAX = 500
+export const TERM_ROWS_MIN = 1
+export const TERM_ROWS_MAX = 200
 
 // JWT Token 对
 export interface TokenPair {

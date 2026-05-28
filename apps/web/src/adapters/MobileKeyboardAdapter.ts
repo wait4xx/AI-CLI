@@ -3,6 +3,16 @@
  *
  * 使用隐藏 <input> + Composition Event 捕获 IME 输入（中日韩），
  * 监听 visualViewport 动态调整终端容器高度防止键盘遮挡。
+ *
+ * **Event priority coordination with GestureHandler:**
+ * Both classes register listeners on the same terminal container.
+ * Conflict resolution:
+ * - `suppressNextFocus` flag (set by GestureHandler via `setSuppressFocus`)
+ *   prevents this adapter from stealing focus during pinch gestures.
+ * - `handleContainerTouch` checks `e.touches.length >= 2` to skip focus
+ *   when multi-touch (pinch) is in progress.
+ * - The `compositionend` handler always fires after `isComposing` is cleared,
+ *   so gesture interrupts do not corrupt IME state.
  */
 
 export class MobileKeyboardAdapter {

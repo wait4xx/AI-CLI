@@ -300,6 +300,10 @@ type ControlClientMessage =
   | { type: 'RESIZE'; sessionId: string; cols: number; rows: number }
   | { type: 'QUICK_ACTION'; sessionId: string; payload: string }
   | { type: 'INJECT_CODE'; sessionId: string; code: string }
+  | { type: 'OBSERVE_SESSION'; sessionId: string }     // 只读观察者
+  | { type: 'START_RECORDING'; sessionId: string }      // 开始录制
+  | { type: 'STOP_RECORDING'; sessionId: string }       // 停止录制
+  | { type: 'GET_RECORDING'; sessionId: string; startTime?: number; endTime?: number } // 获取回放
 ```
 
 **服务端 → 客户端消息：**
@@ -312,6 +316,8 @@ type ControlServerMessage =
   | { type: 'STATUS_UPDATE'; sessionId: string; status: AgentStatus; message?: string }
   | { type: 'SESSION_READY'; sessionId: string }
   | { type: 'ERROR'; message: string }
+  | { type: 'RECORDING_DATA'; sessionId: string; data: Array<{ data: string; timestamp: number }> }  // base64 编码
+  | { type: 'RECORDING_STATUS'; sessionId: string; recording: boolean; duration: number }
 ```
 
 **状态定义：**

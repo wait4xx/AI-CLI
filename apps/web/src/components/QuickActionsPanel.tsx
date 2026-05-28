@@ -1,14 +1,28 @@
+import { useMemo } from 'react'
 import { useSessionStore } from '../store/sessionStore'
 
 interface QuickActionsPanelProps {
   onAction: (payload: string) => void
 }
 
-const actions = [
-  { label: '✓ Approve', payload: '\r', variant: 'approve' },
-  { label: '✗ Deny', payload: 'n\r', variant: 'deny' },
-  { label: '⏼ Cancel', payload: '\x03', variant: 'cancel' },
-] as const
+// Adapter-specific quick actions (mirrors server-side adapter definitions)
+const ADAPTER_ACTIONS: Record<string, Array<{ label: string; payload: string; variant: string }>> = {
+  claude: [
+    { label: '✓ Approve', payload: '\r', variant: 'approve' },
+    { label: '✗ Deny', payload: 'n\r', variant: 'deny' },
+    { label: '⏼ Cancel', payload: '\x03', variant: 'cancel' },
+  ],
+  aider: [
+    { label: '✓ Apply', payload: 'y\r', variant: 'approve' },
+    { label: '✗ Reject', payload: 'n\r', variant: 'deny' },
+    { label: '⏼ Cancel', payload: '\x03', variant: 'cancel' },
+  ],
+  shell: [
+    { label: '⏼ Cancel', payload: '\x03', variant: 'cancel' },
+  ],
+}
+
+const DEFAULT_ACTIONS = ADAPTER_ACTIONS.claude
 
 const variantStyles: Record<string, string> = {
   approve: 'bg-green-600 hover:bg-green-500 active:bg-green-700 text-white',
@@ -18,6 +32,8 @@ const variantStyles: Record<string, string> = {
 
 export function QuickActionsPanel({ onAction }: QuickActionsPanelProps) {
   const visible = useSessionStore((s) => s.agentStatus === 'WAITING_APPROVAL')
+  const activeAdapter = useSessionStore((s) => s.activeAdapter)
+  const actions = useMemo(() => ADAPTER_ACTIONS[activeAdapter] ?? DEFAULT_ACTIONS, [activeAdapter])
 
   return (
     <div

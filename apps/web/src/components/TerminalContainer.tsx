@@ -41,7 +41,7 @@ const XTERM_THEME_DARK = {
   brightMagenta: '#bb9af7',
   brightCyan: '#7dcfff',
   brightWhite: '#c0caf5',
-}
+} as const
 
 const XTERM_THEME_LIGHT = {
   background: '#fafafa',
@@ -65,7 +65,7 @@ const XTERM_THEME_LIGHT = {
   brightMagenta: '#c678dd',
   brightCyan: '#56b6c2',
   brightWhite: '#ffffff',
-}
+} as const
 
 function getXtermTheme(theme: 'dark' | 'light') {
   return theme === 'light' ? XTERM_THEME_LIGHT : XTERM_THEME_DARK
@@ -257,14 +257,18 @@ export function TerminalContainer() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
+  const accessTokenRef = useRef(accessToken)
+  useEffect(() => { accessTokenRef.current = accessToken }, [accessToken])
+
   // Connect on mount when authenticated with session
   useEffect(() => {
-    if (!termRef.current || !accessToken || !sessionId) return
+    if (!termRef.current || !accessTokenRef.current || !sessionId) return
     if (!isConnected && connectionPhase === 'DISCONNECTED') {
       const { cols, rows } = termRef.current
       connect(sessionId, cols, rows, termRef.current)
     }
-  }, [accessToken, sessionId, isConnected, connectionPhase, connect])
+    // [M5修复] 用 ref 追踪 accessToken，避免 token 刷新导致频繁重连
+  }, [sessionId, isConnected, connectionPhase, connect])
 
   // visibilitychange: DOM detach/reattach (ADR-011)
   useEffect(() => {

@@ -4,7 +4,7 @@ import Fastify from 'fastify'
 describe('Health endpoint', () => {
   it('should return ok status', async () => {
     const app = Fastify()
-    app.get('/health', async () => ({ status: 'ok', timestamp: Date.now() }))
+    app.get('/health', async () => ({ status: 'ok' }))
 
     const res = await app.inject({
       method: 'GET',
@@ -12,6 +12,5 @@ describe('Health endpoint', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(res.json().status).toBe('ok')
-    expect(res.json().timestamp).toBeDefined()
   })
 })

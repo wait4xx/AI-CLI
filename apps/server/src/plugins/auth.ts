@@ -5,6 +5,7 @@ import { JwtPayload } from '@ai-cli/shared'
 import fs from 'fs'
 import path from 'path'
 import { pinoLogger } from '../lib/logger.js'
+import { getConfig } from '../lib/config.js'
 
 const WHITELIST_PATHS = ['/health', '/api/auth/login', '/api/auth/refresh']
 
@@ -15,14 +16,17 @@ export interface StoredUser {
   createdAt: string
 }
 
-const USERS_FILE_PATH = path.join(process.env.PROJECT_ROOT || '/workspace', '.users.json')
+function getUsersFilePath(): string {
+  return path.join(getConfig().PROJECT_ROOT, '.users.json')
+}
 
 const users = new Map<string, StoredUser>()
 
 function loadUsers(): void {
   try {
-    if (fs.existsSync(USERS_FILE_PATH)) {
-      const data = fs.readFileSync(USERS_FILE_PATH, 'utf-8')
+    const usersFilePath = getUsersFilePath()
+    if (fs.existsSync(usersFilePath)) {
+      const data = fs.readFileSync(usersFilePath, 'utf-8')
       const parsed: Record<string, StoredUser> = JSON.parse(data)
       for (const [key, value] of Object.entries(parsed)) {
         users.set(key, value)
@@ -35,17 +39,23 @@ function loadUsers(): void {
 
 function saveUsers(): void {
   try {
+    const usersFilePath = getUsersFilePath()
     const obj: Record<string, StoredUser> = {}
     for (const [key, value] of users.entries()) {
       obj[key] = value
     }
-    const dir = path.dirname(USERS_FILE_PATH)
+    const dir = path.dirname(usersFilePath)
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true })
     }
-    fs.writeFileSync(USERS_FILE_PATH, JSON.stringify(obj, null, 2), 'utf-8')
+    // [S4修复] write-then-rename 原子写入，防止写入中途崩溃导致数据损坏
+    const tmpPath = usersFilePath + '.tmp'
+    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf-8')
+    fs.renameSync(tmpPath, usersFilePath)
   } catch (err) {
     pinoLogger.error({ err }, 'Failed to save users file')
+    // Re-throw so callers know persistence failed
+    throw new Error('Failed to persist user data')
   }
 }
 
@@ -101,7 +111,7 @@ async function authPlugin(fastify: FastifyInstance) {
 
     const token = authHeader.slice(7)
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload
+      const decoded = jwt.verify(token, getConfig().JWT_SECRET) as JwtPayload
       request.user = decoded
     } catch {
       return reply.code(401).send({ error: 'Invalid or expired token' })

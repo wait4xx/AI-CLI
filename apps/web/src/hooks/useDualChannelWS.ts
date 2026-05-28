@@ -25,6 +25,8 @@ const CONTROL_MSG_TYPES = new Set([
   'AUTH', 'AUTH_OK', 'ATTACH_SESSION', 'INIT_SESSION', 'RESIZE',
   'QUICK_ACTION', 'INJECT_CODE', 'OBSERVE_SESSION', 'PING', 'PONG',
   'STATUS_UPDATE', 'SESSION_READY', 'TOKEN_RENEWED', 'ERROR',
+  // [M16修复] 补充录制相关消息类型
+  'RECORDING_DATA', 'RECORDING_STATUS', 'START_RECORDING', 'STOP_RECORDING', 'GET_RECORDING',
 ])
 
 function isValidControlMsg(data: unknown): data is { type: string; [key: string]: unknown } {
@@ -59,6 +61,8 @@ export function useDualChannelWS(
   getRefreshToken: () => Promise<string>,
   onAuthFailure: () => void,
 ): UseDualChannelWS {
+  // [M4修复] ref 用于内部逻辑，state 用于 UI 显示
+  const reconnectCountRef = useRef(0)
   const [reconnectCount, setReconnectCount] = useState(0)
 
   const termWsRef = useRef<WebSocket | null>(null)
@@ -118,7 +122,8 @@ export function useDualChannelWS(
       const s = sessionRef.current
       const t = termRef.current
       if (s && t) {
-        setReconnectCount((c) => c + 1)
+        reconnectCountRef.current += 1
+        setReconnectCount(reconnectCountRef.current)
         connectInternal(s.sessionId, s.cols, s.rows, t)
       }
     }, jittered)
@@ -179,7 +184,9 @@ export function useDualChannelWS(
             isConnectingRef.current = false
             return
           }
-        } catch {}
+        } catch {
+          // Ignore — connection attempt failed, will retry via onclose
+        }
         return
       }
     }
@@ -244,7 +251,7 @@ export function useDualChannelWS(
               sessionId: s.sessionId,
               cols: s.cols,
               rows: s.rows,
-              adapter: 'claude',
+              adapter: useSessionStore.getState().activeAdapter ?? 'claude',
             }
             ctrlWs.send(JSON.stringify(init))
             return
@@ -255,12 +262,15 @@ export function useDualChannelWS(
           store.getState().setConnected('CONNECTED')
           isConnectingRef.current = false
           reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+          reconnectCountRef.current = 0
           setReconnectCount(0)
           startCtrlPing()
           return
         }
         handleCtrlMessage(msg)
-      } catch {}
+      } catch {
+        // Ignore — malformed control message, non-critical
+      }
     }
 
     ctrlWs.onclose = (event) => {
@@ -462,7 +472,7 @@ export function useDualChannelWS(
               sessionId,
               cols,
               rows,
-              adapter: 'claude',
+              adapter: useSessionStore.getState().activeAdapter ?? 'claude',
             }
             ctrlWs.send(JSON.stringify(init))
             return
@@ -477,6 +487,7 @@ export function useDualChannelWS(
           store.getState().setSession(sessionId)
           isConnectingRef.current = false
           reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+          reconnectCountRef.current = 0
           setReconnectCount(0)
 
           startCtrlPing()
@@ -486,8 +497,9 @@ export function useDualChannelWS(
             offlineCacheRef.current.flushInputs((data) => sendInput(data))
           }
 
-          // Ctrl+L to trigger pty redraw on reconnect
-          if (reconnectCount > 0) {
+          // Ctrl+L to trigger pty redraw on reconnect (V3-1: save count before reset above)
+          const wasReconnect = reconnectCount > 0
+          if (wasReconnect) {
             const termWs = termWsRef.current
             if (termWs && termWs.readyState === WebSocket.OPEN) {
               termWs.send('\x0c')
@@ -545,7 +557,8 @@ export function useDualChannelWS(
         const s = sessionRef.current
         const t = termRef.current
         if (s && t) {
-          setReconnectCount((c) => c + 1)
+          reconnectCountRef.current += 1
+          setReconnectCount(reconnectCountRef.current)
           connectInternal(s.sessionId, s.cols, s.rows, t)
         }
       } else {
@@ -619,9 +632,11 @@ export function useDualChannelWS(
 
   const sendInjectCode = useCallback((code: string) => {
     // 安全修复[C9]: 限制注入代码长度为 100KB，防止过大 payload
+    // [N3修复] 使用字节长度而非字符长度，中文字符 UTF-8 占 3 字节
     const MAX_INJECT_CODE_SIZE = 100 * 1024 // 100KB
-    if (code.length > MAX_INJECT_CODE_SIZE) {
-      console.warn(`[安全警告] INJECT_CODE 内容超过 ${MAX_INJECT_CODE_SIZE} 字节限制 (${code.length} bytes)，已拒绝发送`)
+    const byteLength = new TextEncoder().encode(code).length
+    if (byteLength > MAX_INJECT_CODE_SIZE) {
+      console.warn(`[安全警告] INJECT_CODE 内容超过 ${MAX_INJECT_CODE_SIZE} 字节限制 (${byteLength} bytes)，已拒绝发送`)
       return
     }
 

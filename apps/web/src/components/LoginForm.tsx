@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 
-export function LoginForm({ onLogin }: { onLogin: (username: string, password: string) => Promise<void> }) {
+// [L5修复] 密码最小长度从常量导入
+const MIN_PASSWORD_LENGTH = 6
+
+export const LoginForm = memo(function LoginForm({ onLogin }: { onLogin: (username: string, password: string) => Promise<void> }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -10,8 +13,8 @@ export function LoginForm({ onLogin }: { onLogin: (username: string, password: s
     e.preventDefault()
     setError('')
     // 安全修复[W29]: 密码最小长度校验
-    if (password.length < 6) {
-      setError('密码长度不能少于 6 位')
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`密码长度不能少于 ${MIN_PASSWORD_LENGTH} 位`)
       return
     }
     setLoading(true)
@@ -57,4 +60,4 @@ export function LoginForm({ onLogin }: { onLogin: (username: string, password: s
       </form>
     </div>
   )
-}
+})

@@ -7,6 +7,16 @@ import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
+import { go } from '@codemirror/lang-go'
+import { rust } from '@codemirror/lang-rust'
+import { java } from '@codemirror/lang-java'
+import { cpp } from '@codemirror/lang-cpp'
+import { php } from '@codemirror/lang-php'
+import { sql } from '@codemirror/lang-sql'
+import { StreamLanguage } from '@codemirror/language'
+// @codemirror/legacy-modes StreamLanguage 模式
+import { ruby as rubyMode } from '@codemirror/legacy-modes/mode/ruby'
+import { swift as swiftMode } from '@codemirror/legacy-modes/mode/swift'
 import { X, Terminal } from 'lucide-react'
 import { THEME_COLORS } from '../lib/theme'
 
@@ -33,6 +43,25 @@ function getLanguageExtension(lang: string) {
       return css()
     case 'html':
       return html()
+    // [R1修复] 补充后端已支持的语言扩展
+    case 'go':
+      return go()
+    case 'rust':
+      return rust()
+    case 'java':
+      return java()
+    case 'c':
+      return cpp()
+    case 'cpp':
+      return cpp()
+    case 'php':
+      return php()
+    case 'ruby':
+      return StreamLanguage.define(rubyMode)
+    case 'swift':
+      return StreamLanguage.define(swiftMode)
+    case 'sql':
+      return sql()
     default:
       return []
   }

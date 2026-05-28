@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
 import type { AgentStatus } from '@ai-cli/shared'
@@ -9,7 +10,7 @@ const agentStatusConfig: Record<AgentStatus, { label: string; className: string;
   ERROR: { label: 'ERROR', className: 'bg-red-600 text-red-100' },
 }
 
-export function StatusBar({ actionsSlot }: { actionsSlot?: React.ReactNode }) {
+export const StatusBar = memo(function StatusBar({ actionsSlot }: { actionsSlot?: React.ReactNode }) {
   const { connectionPhase, agentStatus, sessions, activeSessionIndex } = useSessionStore()
 
   const dotColor =
@@ -46,4 +47,4 @@ export function StatusBar({ actionsSlot }: { actionsSlot?: React.ReactNode }) {
       {actionsSlot}
     </div>
   )
-}
+})
