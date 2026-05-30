@@ -192,17 +192,20 @@ cd packages/shared && pnpm test
 
 ### REST API
 
-| 端点                 | 方法 | 说明                                 |
-| -------------------- | ---- | ------------------------------------ |
-| `/api/auth/login`    | POST | 登录获取 JWT token                   |
-| `/api/auth/refresh`  | POST | 刷新 access token                    |
-| `/api/sessions`      | GET  | 列出当前用户所有活跃会话             |
-| `/api/sessions/tmux` | GET  | 列出可用的外部 tmux 会话             |
-| `/api/fs/tree`       | GET  | 获取目录列表（支持绝对路径）         |
-| `/api/fs/file`       | GET  | 读取文件内容                         |
-| `/api/fs/file`       | PUT  | 写入文件（原子写入，禁止可执行文件） |
-| `/api/fs/cwd`        | GET  | 获取终端当前工作目录                 |
-| `/api/fs/complete`   | GET  | 路径自动补全                         |
+| 端点                 | 方法   | 说明                                 |
+| -------------------- | ------ | ------------------------------------ |
+| `/api/auth/login`    | POST   | 登录获取 JWT token                   |
+| `/api/auth/refresh`  | POST   | 刷新 access token                    |
+| `/api/sessions`      | GET    | 列出当前用户所有活跃会话             |
+| `/api/sessions/tmux` | GET    | 列出可用的外部 tmux 会话             |
+| `/api/tmux`          | GET    | 列出所有 tmux 会话（含详情）         |
+| `/api/tmux/:name`    | DELETE | 终止指定 tmux 会话                   |
+| `/api/tmux/:name`    | PATCH  | 重命名 tmux 会话                     |
+| `/api/fs/tree`       | GET    | 获取目录列表（支持绝对路径）         |
+| `/api/fs/file`       | GET    | 读取文件内容                         |
+| `/api/fs/file`       | PUT    | 写入文件（原子写入，禁止可执行文件） |
+| `/api/fs/cwd`        | GET    | 获取终端当前工作目录                 |
+| `/api/fs/complete`   | GET    | 路径自动补全                         |
 
 完整 API 文档见 Swagger UI（`/docs`）。
 
@@ -241,6 +244,8 @@ adapters.set('mytool', new MyToolAdapter())
 - [x] 多会话标签管理（新建 / 切换 / 关闭 / 连接外部 tmux）
 - [x] 文件浏览器 CWD 跟踪 + 绝对路径浏览 + 路径自动补全
 - [x] 终端渲染修复（ANSI 转义保留 + 重连画面恢复 + 窗口尺寸同步）
+- [x] Tmux 会话管理（列出/终止/重命名所有 tmux 会话）
+- [x] Claude Teammate 模式状态识别
 - [ ] PWA 图标和启动画面
 - [ ] Claude 审批弹窗（飞书卡片风格）
 - [ ] 更多 CLI 适配器（Cursor 等）
@@ -466,6 +471,9 @@ See [`packages/shared/src/protocol.ts`](packages/shared/src/protocol.ts) for ful
 | `/api/auth/refresh`  | POST   | Refresh access token                               |
 | `/api/sessions`      | GET    | List all active sessions for current user          |
 | `/api/sessions/tmux` | GET    | List available external tmux sessions              |
+| `/api/tmux`          | GET    | List all tmux sessions with details                |
+| `/api/tmux/:name`    | DELETE | Kill a tmux session                                |
+| `/api/tmux/:name`    | PATCH  | Rename a tmux session                              |
 | `/api/fs/tree`       | GET    | List directory contents (supports absolute paths)  |
 | `/api/fs/file`       | GET    | Read file contents                                 |
 | `/api/fs/file`       | PUT    | Write file (atomic write, blocks executable types) |
@@ -509,6 +517,8 @@ adapters.set('mytool', new MyToolAdapter())
 - [x] Multi-session tab management (create / switch / close / attach external tmux)
 - [x] File explorer CWD tracking + absolute path browsing + path autocomplete
 - [x] Terminal rendering fixes (ANSI escape preservation + reconnect screen restore + resize sync)
+- [x] Tmux session management (list/kill/rename all tmux sessions)
+- [x] Claude Teammate mode status detection
 - [ ] Proper PWA icons and splash screens
 - [ ] Claude approval popup (Feishu card-style dialog)
 - [ ] More CLI adapters (Cursor, etc.)

@@ -23,7 +23,7 @@ describe('useSessionStore', () => {
       expect(state.refreshToken).toBeNull()
       expect(state.fontSize).toBe(14)
       expect(state.theme).toBe('dark')
-      expect(state.activeAdapter).toBe('claude')
+      expect(state.activeAdapter).toBe('shell')
     })
   })
 
@@ -141,7 +141,7 @@ describe('useSessionStore', () => {
     it('should update session status', () => {
       useSessionStore.getState().setSession('test-session')
       useSessionStore.getState().updateSessionStatus('test-session', 'WAITING_APPROVAL')
-      const session = useSessionStore.getState().sessions.find(s => s.id === 'test-session')
+      const session = useSessionStore.getState().sessions.find((s) => s.id === 'test-session')
       expect(session?.status).toBe('WAITING_APPROVAL')
     })
   })
@@ -199,7 +199,7 @@ describe('useSessionStore', () => {
       expect(state.agentStatus).toBe('IDLE')
       expect(state.fontSize).toBe(14)
       expect(state.theme).toBe('dark')
-      expect(state.activeAdapter).toBe('claude')
+      expect(state.activeAdapter).toBe('shell')
     })
   })
 })

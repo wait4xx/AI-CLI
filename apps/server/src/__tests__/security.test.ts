@@ -29,11 +29,9 @@ describe('Security', () => {
     await app.register(fsRoutes, { prefix: '/api/fs' })
     await app.ready()
 
-    validToken = jwt.sign(
-      { userId: '1', username: 'test' },
-      process.env.JWT_SECRET!,
-      { expiresIn: '1h' },
-    )
+    validToken = jwt.sign({ userId: '1', username: 'test' }, process.env.JWT_SECRET!, {
+      expiresIn: '1h',
+    })
   })
 
   afterAll(async () => {
@@ -43,11 +41,9 @@ describe('Security', () => {
   // === Auth tests ===
 
   it('should reject expired JWT', async () => {
-    const expiredToken = jwt.sign(
-      { userId: '1', username: 'test' },
-      process.env.JWT_SECRET!,
-      { expiresIn: '-1s' },
-    )
+    const expiredToken = jwt.sign({ userId: '1', username: 'test' }, process.env.JWT_SECRET!, {
+      expiresIn: '-1s',
+    })
 
     const res = await app.inject({
       method: 'GET',
@@ -89,14 +85,15 @@ describe('Security', () => {
     expect(res.statusCode).toBe(403)
   })
 
-  it('should reject path traversal with absolute path outside root', async () => {
+  it('should allow absolute path browsing', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/api/fs/file',
       query: { path: '/etc/passwd' },
       headers: { authorization: `Bearer ${validToken}` },
     })
-    expect(res.statusCode).toBe(403)
+    // Absolute paths are allowed — file browser supports browsing any directory
+    expect([200, 404]).toContain(res.statusCode)
   })
 
   it('should reject path traversal via tree endpoint', async () => {

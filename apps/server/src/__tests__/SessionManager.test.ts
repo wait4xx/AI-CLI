@@ -23,7 +23,7 @@ vi.mock('node-pty', () => ({
 
 // ─── Mock execFile for tmux commands ───
 vi.mock('child_process', () => ({
-  execFile: vi.fn((_cmd: string, _args: string[], cb: Function) => {
+  execFile: vi.fn((_cmd: string, _args: string[], cb: (...a: unknown[]) => void) => {
     // tmux which → success, tmux has-session → fail, tmux list-sessions → empty
     if (_args[0] === 'which') cb(null, { stdout: '/usr/bin/tmux' })
     else if (_args[0] === 'has-session') cb(new Error('no session'))
@@ -38,10 +38,18 @@ vi.mock('../core/sessionStore.js', () => ({
   SessionStore: class {
     private store = new Map()
     load() {}
-    get(id: string) { return this.store.get(id) }
-    set(id: string, val: any) { this.store.set(id, val) }
-    delete(id: string) { this.store.delete(id) }
-    entries() { return this.store.entries() }
+    get(id: string) {
+      return this.store.get(id)
+    }
+    set(id: string, val: any) {
+      this.store.set(id, val)
+    }
+    delete(id: string) {
+      this.store.delete(id)
+    }
+    entries() {
+      return this.store.entries()
+    }
     flush() {}
   },
 }))
@@ -54,12 +62,18 @@ vi.mock('../core/audit.js', () => ({
 // ─── Mock recorder ───
 vi.mock('../core/recorder.js', () => ({
   SessionRecorder: class {
-    isRecording() { return false }
+    isRecording() {
+      return false
+    }
     record() {}
     start() {}
     stop() {}
-    getPlayback() { return [] }
-    getDuration() { return 0 }
+    getPlayback() {
+      return []
+    }
+    getDuration() {
+      return 0
+    }
   },
 }))
 
@@ -118,37 +132,37 @@ describe('SessionManager', () => {
     })
 
     it('should reject unknown adapter', () => {
-      expect(() =>
-        manager.createOrAttachSession('test-x', 80, 24, 'unknown', 'user-1'),
-      ).toThrow('Unknown adapter: unknown')
+      expect(() => manager.createOrAttachSession('test-x', 80, 24, 'unknown', 'user-1')).toThrow(
+        'Unknown adapter: unknown',
+      )
     })
 
     it('should reject invalid sessionId', () => {
-      expect(() =>
-        manager.createOrAttachSession('../etc', 80, 24, 'shell', 'user-1'),
-      ).toThrow('Invalid sessionId')
+      expect(() => manager.createOrAttachSession('../etc', 80, 24, 'shell', 'user-1')).toThrow(
+        'Invalid sessionId',
+      )
     })
 
     // [R9] Defense-in-depth: cols/rows validation at creation point
     it('should reject cols/rows out of range', () => {
-      expect(() =>
-        manager.createOrAttachSession('test-cols', 0, 24, 'shell', 'user-1'),
-      ).toThrow('Invalid terminal dimensions')
-      expect(() =>
-        manager.createOrAttachSession('test-cols', 80, 0, 'shell', 'user-1'),
-      ).toThrow('Invalid terminal dimensions')
-      expect(() =>
-        manager.createOrAttachSession('test-cols', 501, 24, 'shell', 'user-1'),
-      ).toThrow('Invalid terminal dimensions')
-      expect(() =>
-        manager.createOrAttachSession('test-cols', 80, 201, 'shell', 'user-1'),
-      ).toThrow('Invalid terminal dimensions')
+      expect(() => manager.createOrAttachSession('test-cols', 0, 24, 'shell', 'user-1')).toThrow(
+        'Invalid terminal dimensions',
+      )
+      expect(() => manager.createOrAttachSession('test-cols', 80, 0, 'shell', 'user-1')).toThrow(
+        'Invalid terminal dimensions',
+      )
+      expect(() => manager.createOrAttachSession('test-cols', 501, 24, 'shell', 'user-1')).toThrow(
+        'Invalid terminal dimensions',
+      )
+      expect(() => manager.createOrAttachSession('test-cols', 80, 201, 'shell', 'user-1')).toThrow(
+        'Invalid terminal dimensions',
+      )
     })
 
     it('should reject non-finite cols/rows', () => {
-      expect(() =>
-        manager.createOrAttachSession('test-nan', NaN, 24, 'shell', 'user-1'),
-      ).toThrow('Invalid terminal dimensions')
+      expect(() => manager.createOrAttachSession('test-nan', NaN, 24, 'shell', 'user-1')).toThrow(
+        'Invalid terminal dimensions',
+      )
       expect(() =>
         manager.createOrAttachSession('test-nan', 80, Infinity, 'shell', 'user-1'),
       ).toThrow('Invalid terminal dimensions')
@@ -264,6 +278,102 @@ describe('SessionManager', () => {
       const status = manager.getRecordingStatus('status-test')
       expect(status).toHaveProperty('recording')
       expect(status).toHaveProperty('duration')
+    })
+  })
+
+  describe('listAllTmuxSessions', () => {
+    it('should return empty array when no tmux server', async () => {
+      const sessions = await manager.listAllTmuxSessions()
+      expect(sessions).toEqual([])
+    })
+
+    it('should parse tmux session list with managed marking', async () => {
+      const { execFile } = await import('child_process')
+      const mockExec = vi.mocked(execFile)
+      manager.createOrAttachSession('managed-1', 80, 24, 'shell', 'user-1')
+      mockExec.mockImplementation((_cmd: any, args: any, cb: any) => {
+        if (args[0] === 'list-sessions' && args[2]?.includes('session_created')) {
+          cb(null, {
+            stdout:
+              'aicli-managed-1:1:0:Mon May 26 10:00:00 2025\nexternal-session:2:1:Mon May 25 09:00:00 2025',
+          })
+        } else {
+          cb(null, { stdout: '' })
+        }
+        return null as any
+      })
+      const sessions = await manager.listAllTmuxSessions()
+      expect(sessions).toHaveLength(2)
+      const managed = sessions.find((s) => s.name === 'aicli-managed-1')
+      expect(managed?.isManaged).toBe(true)
+      expect(managed?.adapterName).toBe('shell')
+      const external = sessions.find((s) => s.name === 'external-session')
+      expect(external?.isManaged).toBe(false)
+      expect(external?.windows).toBe(2)
+    })
+  })
+
+  describe('killTmuxSession', () => {
+    it('should kill managed session with ownership check', async () => {
+      manager.createOrAttachSession('kill-test', 80, 24, 'shell', 'user-1')
+      await manager.killTmuxSession('aicli-kill-test', 'user-1')
+      expect(manager.hasSession('kill-test')).toBe(false)
+    })
+
+    it('should reject killing managed session without ownership', async () => {
+      manager.createOrAttachSession('kill-owner', 80, 24, 'shell', 'user-1')
+      await expect(manager.killTmuxSession('aicli-kill-owner', 'user-2')).rejects.toThrow(
+        'Permission denied',
+      )
+    })
+
+    it('should kill external tmux session', async () => {
+      const { execFile } = await import('child_process')
+      const mockExec = vi.mocked(execFile)
+      mockExec.mockImplementation((_cmd: any, args: any, cb: any) => {
+        cb(null, { stdout: '' })
+        return null as any
+      })
+      await expect(manager.killTmuxSession('external-test', 'user-1')).resolves.toBeUndefined()
+    })
+  })
+
+  describe('renameTmuxSession', () => {
+    it('should rename managed session and update tracking', async () => {
+      manager.createOrAttachSession('rename-test', 80, 24, 'shell', 'user-1')
+      const { execFile } = await import('child_process')
+      const mockExec = vi.mocked(execFile)
+      mockExec.mockImplementation((_cmd: any, args: any, cb: any) => {
+        cb(null, { stdout: '' })
+        return null as any
+      })
+      await manager.renameTmuxSession('aicli-rename-test', 'new-name', 'user-1')
+      expect(manager.hasSession('rename-test')).toBe(true)
+    })
+
+    it('should reject invalid new name', async () => {
+      await expect(manager.renameTmuxSession('old', '../bad', 'user-1')).rejects.toThrow(
+        'Invalid session name',
+      )
+    })
+
+    it('should reject rename without ownership', async () => {
+      manager.createOrAttachSession('rename-owner', 80, 24, 'shell', 'user-1')
+      await expect(
+        manager.renameTmuxSession('aicli-rename-owner', 'new', 'user-2'),
+      ).rejects.toThrow('Permission denied')
+    })
+
+    it('should rename external tmux session', async () => {
+      const { execFile } = await import('child_process')
+      const mockExec = vi.mocked(execFile)
+      mockExec.mockImplementation((_cmd: any, args: any, cb: any) => {
+        cb(null, { stdout: '' })
+        return null as any
+      })
+      await expect(
+        manager.renameTmuxSession('external', 'renamed', 'user-1'),
+      ).resolves.toBeUndefined()
     })
   })
 })

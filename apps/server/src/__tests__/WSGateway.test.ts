@@ -80,8 +80,8 @@ function createMockWs() {
     on: vi.fn(),
     removeAllListeners: vi.fn(),
   }
-  const handlers = new Map<string, Function[]>()
-  ws.on = vi.fn((event: string, handler: Function) => {
+  const handlers = new Map<string, ((...a: unknown[]) => void)[]>()
+  ws.on = vi.fn((event: string, handler: (...a: unknown[]) => void) => {
     if (!handlers.has(event)) handlers.set(event, [])
     handlers.get(event)!.push(handler)
   })
@@ -97,7 +97,9 @@ describe('WSGateway', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockSessionManager.hasSession.mockImplementation((id: string) => id === 'valid-session')
-    mockSessionManager.getOwner.mockImplementation((id: string) => (id === 'valid-session' ? 'user-1' : null))
+    mockSessionManager.getOwner.mockImplementation((id: string) =>
+      id === 'valid-session' ? 'user-1' : null,
+    )
     mockSessionManager.attachClient.mockImplementation(() => {})
     mockSessionManager.detachClient.mockImplementation(() => {})
     mockSessionManager.attachObserver.mockImplementation(() => {})
@@ -108,7 +110,10 @@ describe('WSGateway', () => {
     mockSessionManager.resize.mockImplementation(() => {})
     mockSessionManager.startRecording.mockImplementation(() => {})
     mockSessionManager.stopRecording.mockImplementation(() => {})
-    mockSessionManager.getRecordingStatus.mockImplementation(() => ({ recording: false, duration: 0 }))
+    mockSessionManager.getRecordingStatus.mockImplementation(() => ({
+      recording: false,
+      duration: 0,
+    }))
     mockSessionManager.getRecording.mockImplementation(() => [])
     mockSessionManager.getSessionIds.mockImplementation(() => [])
     mockSessionManager.destroy.mockImplementation(() => {})
@@ -125,10 +130,15 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleTerminalConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.attachClient).toHaveBeenCalledWith('valid-session', ws, undefined)
     })
@@ -137,30 +147,44 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleTerminalConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'ghost-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'ghost-session',
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message === 'Session not found'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message === 'Session not found'
+        }),
+      ).toBe(true)
     })
 
     it('should reject ATTACH when user is not the owner', () => {
       const ws = createMockWs()
       gateway.handleTerminalConnection(ws, otherUser())
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message === 'Permission denied'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message === 'Permission denied'
+        }),
+      ).toBe(true)
     })
 
     it('should respond to PING with PONG in binary mode', () => {
@@ -168,25 +192,37 @@ describe('WSGateway', () => {
       gateway.handleTerminalConnection(ws, defaultUser)
 
       // Attach session first
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
       // Send PING (0x00)
       ws.emit('message', Buffer.from([0x00]))
 
-      expect(ws.sent.some((s: any) => Buffer.isBuffer(s) && s.length === 1 && s[0] === 0x01)).toBe(true)
+      expect(ws.sent.some((s: any) => Buffer.isBuffer(s) && s.length === 1 && s[0] === 0x01)).toBe(
+        true,
+      )
     })
 
     it('should forward keyboard input to pty after ATTACH', () => {
       const ws = createMockWs()
       gateway.handleTerminalConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
       const input = Buffer.from('ls -la\n')
       ws.emit('message', input)
@@ -198,10 +234,15 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleTerminalConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
       ws.emit('close')
 
@@ -216,26 +257,39 @@ describe('WSGateway', () => {
 
       ws.emit('message', Buffer.from(JSON.stringify({ type: 'PING' })))
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'PONG'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'PONG'
+        }),
+      ).toBe(true)
     })
 
     it('should handle INIT_SESSION', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'INIT_SESSION',
-        sessionId: 'new-session',
-        cols: 80,
-        rows: 24,
-        adapter: 'shell',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'INIT_SESSION',
+            sessionId: 'new-session',
+            cols: 80,
+            rows: 24,
+            adapter: 'shell',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.createOrAttachSession).toHaveBeenCalledWith(
-        'new-session', 80, 24, 'shell', 'user-1',
+        'new-session',
+        80,
+        24,
+        'shell',
+        'user-1',
+        undefined,
+        undefined,
       )
     })
 
@@ -247,74 +301,105 @@ describe('WSGateway', () => {
       mockSessionManager.getOwner.mockReturnValue('user-1')
 
       // Attach session first
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
       ws.sent.length = 0
 
       // Send oversized INJECT_CODE (1MB + 1 byte)
       const hugeCode = 'x'.repeat(1048577)
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'INJECT_CODE',
-        code: hugeCode,
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'INJECT_CODE',
+            code: hugeCode,
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message?.includes('exceeds maximum size')
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message?.includes('exceeds maximum size')
+        }),
+      ).toBe(true)
     })
 
     it('should reject RESIZE without active session', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'RESIZE',
-        cols: 120,
-        rows: 40,
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'RESIZE',
+            cols: 120,
+            rows: 40,
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message === 'No active session'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message === 'No active session'
+        }),
+      ).toBe(true)
     })
 
     it('should handle REFRESH token renewal', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      const refreshToken = jwt.sign(
-        { userId: 'user-1', username: 'test' },
-        JWT_REFRESH_SECRET,
-        { expiresIn: '7d' },
+      const refreshToken = jwt.sign({ userId: 'user-1', username: 'test' }, JWT_REFRESH_SECRET, {
+        expiresIn: '7d',
+      })
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'REFRESH',
+            refreshToken,
+          }),
+        ),
       )
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'REFRESH',
-        refreshToken,
-      })))
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'TOKEN_RENEWED' && parsed?.accessToken
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'TOKEN_RENEWED' && parsed?.accessToken
+        }),
+      ).toBe(true)
     })
 
     it('should reject invalid refresh token', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'REFRESH',
-        refreshToken: 'invalid',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'REFRESH',
+            refreshToken: 'invalid',
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message === 'Invalid refresh token'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message === 'Invalid refresh token'
+        }),
+      ).toBe(true)
     })
 
     it('should clean up ping timers on destroy', () => {
@@ -328,16 +413,27 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'INIT_SESSION',
-        sessionId: 'clamp-test',
-        cols: 9999,
-        rows: -5,
-        adapter: 'shell',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'INIT_SESSION',
+            sessionId: 'clamp-test',
+            cols: 9999,
+            rows: -5,
+            adapter: 'shell',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.createOrAttachSession).toHaveBeenCalledWith(
-        'clamp-test', 500, 1, 'shell', 'user-1',
+        'clamp-test',
+        500,
+        1,
+        'shell',
+        'user-1',
+        undefined,
+        undefined,
       )
     })
 
@@ -345,10 +441,15 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'OBSERVE_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'OBSERVE_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.attachObserver).toHaveBeenCalledWith('valid-session', ws)
     })
@@ -358,30 +459,44 @@ describe('WSGateway', () => {
       gateway.handleControlConnection(ws, defaultUser)
 
       mockSessionManager.hasSession.mockReturnValue(false)
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'OBSERVE_SESSION',
-        sessionId: 'ghost-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'OBSERVE_SESSION',
+            sessionId: 'ghost-session',
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR'
+        }),
+      ).toBe(true)
     })
 
     it('should reject OBSERVE_SESSION when not owner', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, otherUser())
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'OBSERVE_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'OBSERVE_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message === 'Permission denied'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message === 'Permission denied'
+        }),
+      ).toBe(true)
     })
 
     it('should handle START_RECORDING', () => {
@@ -391,15 +506,25 @@ describe('WSGateway', () => {
       mockSessionManager.hasSession.mockReturnValue(true)
       mockSessionManager.getOwner.mockReturnValue('user-1')
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
       ws.sent.length = 0
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'START_RECORDING',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'START_RECORDING',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.startRecording).toHaveBeenCalledWith('valid-session')
     })
@@ -408,14 +533,21 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'START_RECORDING',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'START_RECORDING',
+          }),
+        ),
+      )
 
-      expect(ws.sent.some((s: any) => {
-        const parsed = typeof s === 'string' ? JSON.parse(s) : null
-        return parsed?.type === 'ERROR' && parsed?.message === 'No active session'
-      })).toBe(true)
+      expect(
+        ws.sent.some((s: any) => {
+          const parsed = typeof s === 'string' ? JSON.parse(s) : null
+          return parsed?.type === 'ERROR' && parsed?.message === 'No active session'
+        }),
+      ).toBe(true)
     })
 
     it('should handle STOP_RECORDING', () => {
@@ -425,15 +557,25 @@ describe('WSGateway', () => {
       mockSessionManager.hasSession.mockReturnValue(true)
       mockSessionManager.getOwner.mockReturnValue('user-1')
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
       ws.sent.length = 0
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'STOP_RECORDING',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'STOP_RECORDING',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.stopRecording).toHaveBeenCalledWith('valid-session')
     })
@@ -442,24 +584,38 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'GET_RECORDING',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'GET_RECORDING',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
 
-      expect(mockSessionManager.getRecording).toHaveBeenCalledWith('valid-session', undefined, undefined)
+      expect(mockSessionManager.getRecording).toHaveBeenCalledWith(
+        'valid-session',
+        undefined,
+        undefined,
+      )
     })
 
     it('should pass startTime and endTime to GET_RECORDING', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'GET_RECORDING',
-        sessionId: 'valid-session',
-        startTime: 1000,
-        endTime: 2000,
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'GET_RECORDING',
+            sessionId: 'valid-session',
+            startTime: 1000,
+            endTime: 2000,
+          }),
+        ),
+      )
 
       expect(mockSessionManager.getRecording).toHaveBeenCalledWith('valid-session', 1000, 2000)
     })
@@ -471,16 +627,26 @@ describe('WSGateway', () => {
       mockSessionManager.hasSession.mockReturnValue(true)
       mockSessionManager.getOwner.mockReturnValue('user-1')
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'ATTACH_SESSION',
-        sessionId: 'valid-session',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'ATTACH_SESSION',
+            sessionId: 'valid-session',
+          }),
+        ),
+      )
       ws.sent.length = 0
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'QUICK_ACTION',
-        payload: '\r',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'QUICK_ACTION',
+            payload: '\r',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.sendQuickAction).toHaveBeenCalledWith('valid-session', '\r')
     })
@@ -489,10 +655,15 @@ describe('WSGateway', () => {
       const ws = createMockWs()
       gateway.handleControlConnection(ws, defaultUser)
 
-      ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'QUICK_ACTION',
-        payload: '\r',
-      })))
+      ws.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'QUICK_ACTION',
+            payload: '\r',
+          }),
+        ),
+      )
 
       expect(mockSessionManager.sendQuickAction).not.toHaveBeenCalled()
     })

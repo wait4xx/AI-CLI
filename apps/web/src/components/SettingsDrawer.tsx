@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { Drawer } from 'vaul'
-import { X, Minus, Plus } from 'lucide-react'
+import { X, Minus, Plus, Terminal } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
+import { TmuxManagerDrawer } from './TmuxManagerDrawer'
 
 const { Root, Trigger, Portal, Overlay, Content, Title, Close } = Drawer
 
@@ -11,6 +13,7 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
   const setFontSize = useSessionStore((s) => s.setFontSize)
   const setTheme = useSessionStore((s) => s.setTheme)
   const setActiveAdapter = useSessionStore((s) => s.setActiveAdapter)
+  const [tmuxManagerOpen, setTmuxManagerOpen] = useState(false)
 
   const adapters = [
     { id: 'claude', label: 'Claude' },
@@ -46,7 +49,9 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
                 >
                   <Minus className="w-3.5 h-3.5" />
                 </button>
-                <span className="w-8 text-center text-sm text-gray-100 tabular-nums">{fontSize}</span>
+                <span className="w-8 text-center text-sm text-gray-100 tabular-nums">
+                  {fontSize}
+                </span>
                 <button
                   onClick={() => setFontSize(Math.min(32, fontSize + 1))}
                   disabled={fontSize >= 32}
@@ -92,6 +97,21 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
           </div>
 
           <div className="px-4 py-3 border-t border-dark-border">
+            <button
+              onClick={() => setTmuxManagerOpen(true)}
+              className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 active:bg-white/10 transition-colors text-left"
+            >
+              <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center shrink-0">
+                <Terminal className="w-4 h-4 text-purple-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-200">Manage Tmux Sessions</p>
+                <p className="text-xs text-gray-500">View, kill, rename all tmux sessions</p>
+              </div>
+            </button>
+          </div>
+
+          <div className="px-4 py-3 border-t border-dark-border">
             <p className="text-xs font-medium text-gray-400 mb-2">Keyboard Shortcuts</p>
             <div className="space-y-1.5 text-xs text-gray-500">
               <div className="flex justify-between">
@@ -112,6 +132,7 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
           <div className="h-6" />
         </Content>
       </Portal>
+      <TmuxManagerDrawer open={tmuxManagerOpen} onOpenChange={setTmuxManagerOpen} />
     </Root>
   )
 }

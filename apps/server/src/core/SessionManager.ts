@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 import type { WebSocket } from 'ws'
 import type { AgentStatus } from '@ai-cli/shared'
 import { TERM_COLS_MIN, TERM_COLS_MAX, TERM_ROWS_MIN, TERM_ROWS_MAX } from '@ai-cli/shared'
-import type { CLIAdapter, StateCandidate } from '../adapters/base.js'
+import type { CLIAdapter } from '../adapters/base.js'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import stripAnsi from 'strip-ansi'
@@ -31,11 +31,11 @@ const DEFAULT_ROWS = 24 // fallback terminal rows when restoring orphan sessions
 
 interface Session {
   sessionId: string
-  ownerId: string   // [C1修复] 会话归属用户ID，用于权限校验
+  ownerId: string // [C1修复] 会话归属用户ID，用于权限校验
   adapterName: string
   adapter: CLIAdapter
   ptyProcess: pty.IPty
-  tmuxSessionName: string  // actual tmux session name (aicli-* or external name)
+  tmuxSessionName: string // actual tmux session name (aicli-* or external name)
   status: AgentStatus
   termClients: Set<WebSocket>
   ctrlClients: Set<WebSocket>
@@ -56,9 +56,9 @@ export class SessionManager extends EventEmitter {
   private sessions = new Map<string, Session>()
   private adapters: Map<string, CLIAdapter>
   private fuseTimers = new Map<string, NodeJS.Timeout>()
-  private fuseTexts = new Map<string, string>()  // [R8] latest text for debounced state fusion
+  private fuseTexts = new Map<string, string>() // [R8] latest text for debounced state fusion
   private errorRecoveryTimer: NodeJS.Timeout | null = null
-  private fuseCleanupTimer: NodeJS.Timeout | null = null  // [R4修复] 保存引用以便 destroy() 清理
+  private fuseCleanupTimer: NodeJS.Timeout | null = null // [R4修复] 保存引用以便 destroy() 清理
   private sessionStore: SessionStore
 
   constructor(adapters: Map<string, CLIAdapter>) {
@@ -136,9 +136,9 @@ export class SessionManager extends EventEmitter {
     cols: number,
     rows: number,
     adapterName: string,
-    ownerId: string,   // [C1修复] 传入会话归属用户ID
-    attachToTmux?: string,  // If provided, attach to existing tmux session
-    cwd?: string,           // Working directory for new sessions (falls back to PROJECT_ROOT)
+    ownerId: string, // [C1修复] 传入会话归属用户ID
+    attachToTmux?: string, // If provided, attach to existing tmux session
+    cwd?: string, // Working directory for new sessions (falls back to PROJECT_ROOT)
   ): Session {
     // [V3-2] Validate sessionId first — defense in depth
     if (!SAFE_SESSION_ID.test(sessionId)) {
@@ -148,7 +148,11 @@ export class SessionManager extends EventEmitter {
     const existing = this.sessions.get(sessionId)
     if (existing) {
       // Resize to match current terminal dimensions when reattaching
-      try { existing.ptyProcess.resize(cols, rows) } catch { /* ignore */ }
+      try {
+        existing.ptyProcess.resize(cols, rows)
+      } catch {
+        /* ignore */
+      }
       return existing
     }
 
@@ -159,9 +163,17 @@ export class SessionManager extends EventEmitter {
 
     // [R9] Defense-in-depth: validate cols/rows at creation point (not just WSGateway)
     // Uses shared constants from @ai-cli/shared to avoid DRY violation
-    if (!Number.isFinite(cols) || !Number.isFinite(rows) ||
-        cols < TERM_COLS_MIN || cols > TERM_COLS_MAX || rows < TERM_ROWS_MIN || rows > TERM_ROWS_MAX) {
-      throw new Error(`Invalid terminal dimensions: ${cols}x${rows} (allowed: ${TERM_COLS_MIN}-${TERM_COLS_MAX}x${TERM_ROWS_MIN}-${TERM_ROWS_MAX})`)
+    if (
+      !Number.isFinite(cols) ||
+      !Number.isFinite(rows) ||
+      cols < TERM_COLS_MIN ||
+      cols > TERM_COLS_MAX ||
+      rows < TERM_ROWS_MIN ||
+      rows > TERM_ROWS_MAX
+    ) {
+      throw new Error(
+        `Invalid terminal dimensions: ${cols}x${rows} (allowed: ${TERM_COLS_MIN}-${TERM_COLS_MAX}x${TERM_ROWS_MIN}-${TERM_ROWS_MAX})`,
+      )
     }
 
     let tmuxSessionName: string
@@ -287,12 +299,17 @@ export class SessionManager extends EventEmitter {
     const text = stripAnsi(merged.toString('utf-8'))
     this.fuseTexts.set(session.sessionId, text)
     if (!this.fuseTimers.has(session.sessionId)) {
-      this.fuseTimers.set(session.sessionId, setTimeout(() => {
-        this.fuseTimers.delete(session.sessionId)
-        const latest = this.fuseTexts.get(session.sessionId) || text
-        this.fuseTexts.delete(session.sessionId)
-        this.fuseState(session, latest).catch(() => { /* ignore — fuseState has its own error handling */ })
-      }, STATE_FUSE_COOLDOWN_MS))
+      this.fuseTimers.set(
+        session.sessionId,
+        setTimeout(() => {
+          this.fuseTimers.delete(session.sessionId)
+          const latest = this.fuseTexts.get(session.sessionId) || text
+          this.fuseTexts.delete(session.sessionId)
+          this.fuseState(session, latest).catch(() => {
+            /* ignore — fuseState has its own error handling */
+          })
+        }, STATE_FUSE_COOLDOWN_MS),
+      )
     }
   }
 
@@ -302,9 +319,12 @@ export class SessionManager extends EventEmitter {
 
     try {
       // [C2修复] 使用 execFile 替代 exec
-      const { stdout } = await execFileAsync(
-        'tmux', ['capture-pane', '-p', '-t', session.tmuxSessionName],
-      )
+      const { stdout } = await execFileAsync('tmux', [
+        'capture-pane',
+        '-p',
+        '-t',
+        session.tmuxSessionName,
+      ])
       const screenStatus = session.adapter.parseScreenSnapshot(stdout)
 
       if (screenStatus !== null) {
@@ -347,11 +367,7 @@ export class SessionManager extends EventEmitter {
    * @param ctrlWs - Optional control WebSocket to receive status updates
    * @throws If the session does not exist
    */
-  attachClient(
-    sessionId: string,
-    termWs?: WebSocket,
-    ctrlWs?: WebSocket,
-  ): void {
+  attachClient(sessionId: string, termWs?: WebSocket, ctrlWs?: WebSocket): void {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error(`Session not found: ${sessionId}`)
 
@@ -366,7 +382,9 @@ export class SessionManager extends EventEmitter {
             termWs.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
           }
         })
-        .catch(() => { /* intentionally ignored — stdout flush is best-effort */ })
+        .catch(() => {
+          /* intentionally ignored — stdout flush is best-effort */
+        })
     }
 
     if (ctrlWs) {
@@ -402,7 +420,9 @@ export class SessionManager extends EventEmitter {
           ws.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
         }
       })
-      .catch(() => { /* best-effort tmux capture — may fail if session ended */ })
+      .catch(() => {
+        /* best-effort tmux capture — may fail if session ended */
+      })
   }
 
   /**
@@ -424,11 +444,7 @@ export class SessionManager extends EventEmitter {
    * @param termWs - Terminal WebSocket to detach
    * @param ctrlWs - Control WebSocket to detach
    */
-  detachClient(
-    sessionId: string,
-    termWs?: WebSocket,
-    ctrlWs?: WebSocket,
-  ): void {
+  detachClient(sessionId: string, termWs?: WebSocket, ctrlWs?: WebSocket): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
@@ -460,9 +476,7 @@ export class SessionManager extends EventEmitter {
   sendInput(sessionId: string, data: string | Buffer): void {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error(`Session not found: ${sessionId}`)
-    session.ptyProcess.write(
-      typeof data === 'string' ? data : data.toString('utf-8'),
-    )
+    session.ptyProcess.write(typeof data === 'string' ? data : data.toString('utf-8'))
   }
 
   /**
@@ -503,9 +517,7 @@ export class SessionManager extends EventEmitter {
   async reapOrphanSessions(): Promise<void> {
     try {
       // [C2修复] 使用 execFile 替代 exec，避免命令注入
-      const { stdout } = await execFileAsync(
-        'tmux', ['list-sessions', '-F', '#{session_name}'],
-      )
+      const { stdout } = await execFileAsync('tmux', ['list-sessions', '-F', '#{session_name}'])
       const allTmuxSessions = stdout
         .split('\n')
         .map((s) => s.trim())
@@ -523,7 +535,14 @@ export class SessionManager extends EventEmitter {
           const attachToTmux = isExternal ? tmuxName : undefined
           pinoLogger.info({ sessionId, tmuxName, isExternal }, 'Restoring persisted session')
           try {
-            this.createOrAttachSession(sessionId, DEFAULT_COLS, DEFAULT_ROWS, persisted.adapterName, persisted.ownerId || '', attachToTmux)
+            this.createOrAttachSession(
+              sessionId,
+              DEFAULT_COLS,
+              DEFAULT_ROWS,
+              persisted.adapterName,
+              persisted.ownerId || '',
+              attachToTmux,
+            )
           } catch (err) {
             pinoLogger.warn({ err, sessionId }, 'Failed to restore persisted session')
           }
@@ -558,8 +577,9 @@ export class SessionManager extends EventEmitter {
   // [V3-10修复] 快照 entries 避免迭代中 delete 修改 Map 导致并发修改异常
   private startFuseTimerCleanup(): void {
     this.fuseCleanupTimer = setInterval(() => {
-      const staleEntries = [...this.fuseTimers.entries()]
-        .filter(([sessionId]) => !this.sessions.has(sessionId))
+      const staleEntries = [...this.fuseTimers.entries()].filter(
+        ([sessionId]) => !this.sessions.has(sessionId),
+      )
 
       for (const [sessionId, timer] of staleEntries) {
         clearTimeout(timer)
@@ -628,7 +648,13 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId)
     if (!session) throw new Error(`Session not found: ${sessionId}`)
     try {
-      const { stdout } = await execFileAsync('tmux', ['display-message', '-p', '-t', session.tmuxSessionName, '#{pane_current_path}'])
+      const { stdout } = await execFileAsync('tmux', [
+        'display-message',
+        '-p',
+        '-t',
+        session.tmuxSessionName,
+        '#{pane_current_path}',
+      ])
       const absPath = stdout.trim()
       if (!absPath) return ''
       return absPath
@@ -640,8 +666,13 @@ export class SessionManager extends EventEmitter {
   /**
    * List all active sessions with details (for frontend restore).
    */
-  listSessions(): Array<{ sessionId: string; status: AgentStatus; tmuxSessionName: string; adapterName: string }> {
-    return [...this.sessions.values()].map(s => ({
+  listSessions(): Array<{
+    sessionId: string
+    status: AgentStatus
+    tmuxSessionName: string
+    adapterName: string
+  }> {
+    return [...this.sessions.values()].map((s) => ({
       sessionId: s.sessionId,
       status: s.status,
       tmuxSessionName: s.tmuxSessionName,
@@ -662,19 +693,114 @@ export class SessionManager extends EventEmitter {
    * List available tmux sessions not currently managed by this SessionManager.
    * Returns name, window count, and attached client count for each session.
    */
-  async listAvailableTmuxSessions(): Promise<Array<{ name: string; windows: number; attached: number }>> {
+  async listAvailableTmuxSessions(): Promise<
+    Array<{ name: string; windows: number; attached: number }>
+  > {
     try {
-      const { stdout } = await execFileAsync(
-        'tmux', ['list-sessions', '-F', '#{session_name}:#{session_windows}:#{session_attached}'],
-      )
-      const managedNames = new Set([...this.sessions.values()].map(s => s.tmuxSessionName))
-      return stdout.split('\n').map(line => {
-        const [name, windows, attached] = line.trim().split(':')
-        return { name, windows: Number(windows) || 0, attached: Number(attached) || 0 }
-      }).filter(s => s.name && !managedNames.has(s.name))
+      const { stdout } = await execFileAsync('tmux', [
+        'list-sessions',
+        '-F',
+        '#{session_name}:#{session_windows}:#{session_attached}',
+      ])
+      const managedNames = new Set([...this.sessions.values()].map((s) => s.tmuxSessionName))
+      return stdout
+        .split('\n')
+        .map((line) => {
+          const [name, windows, attached] = line.trim().split(':')
+          return { name, windows: Number(windows) || 0, attached: Number(attached) || 0 }
+        })
+        .filter((s) => s.name && !managedNames.has(s.name))
     } catch {
       return []
     }
+  }
+
+  /**
+   * List ALL tmux sessions with full details (managed + external).
+   */
+  async listAllTmuxSessions(): Promise<
+    Array<{
+      name: string
+      windows: number
+      attached: number
+      created: string
+      isManaged: boolean
+      adapterName?: string
+    }>
+  > {
+    try {
+      const { stdout } = await execFileAsync('tmux', [
+        'list-sessions',
+        '-F',
+        '#{session_name}:#{session_windows}:#{session_attached}:#{session_created_string}',
+      ])
+      const managedMap = new Map<string, string>()
+      for (const s of this.sessions.values()) {
+        managedMap.set(s.tmuxSessionName, s.adapterName)
+      }
+      return stdout
+        .split('\n')
+        .map((line) => {
+          const parts = line.trim().split(':')
+          if (parts.length < 3 || !parts[0]) return null
+          const name = parts[0]
+          const isManaged = managedMap.has(name)
+          return {
+            name,
+            windows: Number(parts[1]) || 0,
+            attached: Number(parts[2]) || 0,
+            created: parts.slice(3).join(':') || '',
+            isManaged,
+            adapterName: isManaged ? managedMap.get(name) : undefined,
+          }
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null)
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Kill a tmux session. For managed sessions, also cleans up in-memory state.
+   */
+  async killTmuxSession(name: string, userId: string): Promise<void> {
+    const managedEntry = [...this.sessions.entries()].find(([, s]) => s.tmuxSessionName === name)
+    if (managedEntry) {
+      const [sessionId, session] = managedEntry
+      if (session.ownerId !== userId) {
+        throw new Error('Permission denied')
+      }
+      this.destroySession(sessionId)
+    } else {
+      await execFileAsync('tmux', ['kill-session', '-t', name])
+    }
+    auditLog('TMUX_KILL', undefined, { name, managed: !!managedEntry })
+  }
+
+  /**
+   * Rename a tmux session. For managed sessions, updates internal tracking.
+   */
+  async renameTmuxSession(oldName: string, newName: string, userId: string): Promise<void> {
+    if (!SAFE_SESSION_ID.test(newName)) {
+      throw new Error(`Invalid session name: ${newName}`)
+    }
+    const managedEntry = [...this.sessions.entries()].find(([, s]) => s.tmuxSessionName === oldName)
+    if (managedEntry) {
+      const [sessionId, session] = managedEntry
+      if (session.ownerId !== userId) {
+        throw new Error('Permission denied')
+      }
+      await execFileAsync('tmux', ['rename-session', '-t', oldName, newName])
+      session.tmuxSessionName = newName
+      const persisted = this.sessionStore.get(sessionId)
+      if (persisted) {
+        persisted.tmuxSessionName = newName
+        this.sessionStore.set(sessionId, persisted)
+      }
+    } else {
+      await execFileAsync('tmux', ['rename-session', '-t', oldName, newName])
+    }
+    auditLog('TMUX_RENAME', undefined, { oldName, newName, managed: !!managedEntry })
   }
 
   /**

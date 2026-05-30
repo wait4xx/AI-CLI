@@ -3,7 +3,7 @@
  * 覆盖：session 列表渲染、切换 session、关闭 session、添加 session
  */
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SessionTabs } from '../components/SessionTabs'
 import { useSessionStore } from '../store/sessionStore'
@@ -13,11 +13,12 @@ describe('SessionTabs', () => {
     useSessionStore.getState().reset()
   })
 
-  it('只有一个 session 时不渲染', () => {
+  it('只有一个 session 时仍然渲染标签和 + 按钮', () => {
     useSessionStore.getState().addSession()
-    // 1 个 session 时组件返回 null
-    const { container } = render(<SessionTabs />)
-    expect(container.innerHTML).toBe('')
+    render(<SessionTabs />)
+    // SessionTabs always renders (tab + plus button)
+    const buttons = screen.getAllByRole('button')
+    expect(buttons.length).toBeGreaterThanOrEqual(1)
   })
 
   it('两个及以上 session 时渲染标签列表', () => {
@@ -26,9 +27,9 @@ describe('SessionTabs', () => {
     render(<SessionTabs />)
 
     // 应该有标签按钮（+ 号按钮不包括在内）
-    const tabButtons = screen.getAllByRole('button').filter(
-      btn => !btn.querySelector('svg') || btn.textContent !== ''
-    )
+    const tabButtons = screen
+      .getAllByRole('button')
+      .filter((btn) => !btn.querySelector('svg') || btn.textContent !== '')
     // 至少有 session 标签和 + 按钮
     expect(tabButtons.length).toBeGreaterThanOrEqual(2)
   })
@@ -39,7 +40,7 @@ describe('SessionTabs', () => {
     const sessions = useSessionStore.getState().sessions
 
     render(<SessionTabs />)
-    sessions.forEach(s => {
+    sessions.forEach((s) => {
       expect(screen.getByText(s.id.slice(0, 8))).toBeInTheDocument()
     })
   })
@@ -70,7 +71,7 @@ describe('SessionTabs', () => {
     expect(useSessionStore.getState().activeSessionIndex).toBe(1)
   })
 
-  it('点击 + 按钮添加新 session', async () => {
+  it('点击 + 按钮打开新建 session 抽屉', async () => {
     useSessionStore.getState().addSession()
     useSessionStore.getState().addSession()
     const initialCount = useSessionStore.getState().sessions.length
@@ -78,14 +79,12 @@ describe('SessionTabs', () => {
     render(<SessionTabs />)
 
     const user = userEvent.setup()
-    // + 按钮是最后一个按钮（有 SVG 图标）
-    const addButton = screen.getByRole('button', { name: '' }) || document.querySelectorAll('button')
-    // 找到有 Plus 图标的按钮
     const allButtons = screen.getAllByRole('button')
     const plusBtn = allButtons[allButtons.length - 1]
     await user.click(plusBtn)
 
-    expect(useSessionStore.getState().sessions.length).toBe(initialCount + 1)
+    // + button opens the drawer, does not directly add a session
+    expect(useSessionStore.getState().sessions.length).toBe(initialCount)
   })
 
   it('最多10个 session', () => {

@@ -22,6 +22,8 @@ export type AuditEvent =
   | 'USER_CREATE'
   | 'USER_DELETE'
   | 'USER_PASSWORD_CHANGE'
+  | 'TMUX_KILL'
+  | 'TMUX_RENAME'
 
 // [S6修复] 使用 createWriteStream 异步写入，避免 appendFileSync 阻塞事件循环
 let stream: WriteStream | null = null
@@ -39,7 +41,11 @@ function getStream(): WriteStream {
   return stream
 }
 
-export function auditLog(event: AuditEvent, userId?: string, details?: Record<string, unknown>): void {
+export function auditLog(
+  event: AuditEvent,
+  userId?: string,
+  details?: Record<string, unknown>,
+): void {
   const entry = {
     timestamp: new Date().toISOString(),
     event,
