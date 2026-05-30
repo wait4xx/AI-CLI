@@ -1,5 +1,6 @@
 import { JwtPayload } from '@ai-cli/shared'
 import type { WSGateway } from '../core/WSGateway.js'
+import type { SessionManager } from '../core/SessionManager.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -9,5 +10,6 @@ declare module 'fastify' {
   // [R9] Type-safe decoration for wsGateway
   interface FastifyInstance {
     wsGateway: WSGateway
+    sessionManager: SessionManager
   }
 }

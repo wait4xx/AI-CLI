@@ -117,6 +117,7 @@ async function start() {
     config.JWT_REFRESH_SECRET,
   )
   fastify.decorate('wsGateway', wsGateway)
+  fastify.decorate('sessionManager', sessionManager)
 
   // WS Routes (registered after gateway is attached)
   await fastify.register(terminalRoutes)

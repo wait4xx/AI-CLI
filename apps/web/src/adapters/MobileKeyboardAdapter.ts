@@ -27,6 +27,7 @@ export class MobileKeyboardAdapter {
     compositionupdate: (e: Event) => void
     compositionend: (e: CompositionEvent) => void
     input: (e: Event) => void
+    keydown: (e: KeyboardEvent) => void
     visualViewportResize: () => void
     containerClick: (e: MouseEvent) => void
     containerTouch: (e: TouchEvent) => void
@@ -59,6 +60,7 @@ export class MobileKeyboardAdapter {
       compositionupdate: this.handleCompositionUpdate.bind(this),
       compositionend: this.handleCompositionEnd.bind(this),
       input: this.handleInput.bind(this),
+      keydown: this.handleKeydown.bind(this),
       visualViewportResize: this.handleViewportResize.bind(this),
       containerClick: this.handleContainerClick.bind(this),
       containerTouch: this.handleContainerTouch.bind(this),
@@ -74,6 +76,9 @@ export class MobileKeyboardAdapter {
     this.hiddenInput.addEventListener('compositionupdate', this.boundHandlers.compositionupdate)
     this.hiddenInput.addEventListener('compositionend', this.boundHandlers.compositionend)
     this.hiddenInput.addEventListener('input', this.boundHandlers.input)
+
+    // Keydown for special keys (Delete, Arrow, Home, End, Tab, etc.)
+    this.hiddenInput.addEventListener('keydown', this.boundHandlers.keydown)
 
     // visualViewport resize — keyboard open/close
     if (window.visualViewport) {
@@ -96,6 +101,7 @@ export class MobileKeyboardAdapter {
     this.hiddenInput.removeEventListener('compositionupdate', this.boundHandlers.compositionupdate)
     this.hiddenInput.removeEventListener('compositionend', this.boundHandlers.compositionend)
     this.hiddenInput.removeEventListener('input', this.boundHandlers.input)
+    this.hiddenInput.removeEventListener('keydown', this.boundHandlers.keydown)
 
     if (window.visualViewport) {
       window.visualViewport.removeEventListener('resize', this.boundHandlers.visualViewportResize)
@@ -158,6 +164,45 @@ export class MobileKeyboardAdapter {
     } else if (inputEvent.inputType === 'insertLineBreak' || inputEvent.inputType === 'insertParagraph') {
       this.onData('\r')
       this.hiddenInput.value = ''
+    }
+  }
+
+  /**
+   * Forward keydown events for special keys that don't produce input events.
+   * Without this, keys like Delete, Arrow keys, Home, End, Tab, Page Up/Down,
+   * and Ctrl/Alt combinations are silently swallowed by the hidden <input>.
+   */
+  private handleKeydown(e: KeyboardEvent): void {
+    if (this.isComposing) return
+
+    // Let the browser handle Ctrl/Meta shortcuts (copy/paste/select-all, etc.)
+    if (e.ctrlKey || e.metaKey) return
+
+    // Printable characters are handled by the input event — skip them here.
+    if (e.key.length === 1 && !e.altKey) return
+
+    // Map special keys to xterm escape sequences or control characters.
+    const sequences: Record<string, string> = {
+      'Enter':      '\r',
+      'Backspace':  '\x7f',
+      'Tab':        '\t',
+      'Escape':     '\x1b',
+      'Delete':     '\x1b[3~',
+      'Home':       '\x1b[H',
+      'End':        '\x1b[F',
+      'PageUp':     '\x1b[5~',
+      'PageDown':   '\x1b[6~',
+      'Insert':     '\x1b[2~',
+      'ArrowUp':    '\x1b[A',
+      'ArrowDown':  '\x1b[B',
+      'ArrowRight': '\x1b[C',
+      'ArrowLeft':  '\x1b[D',
+    }
+
+    const seq = sequences[e.key]
+    if (seq) {
+      e.preventDefault()
+      this.onData(seq)
     }
   }
 

@@ -23,7 +23,7 @@ export type ControlClientMessage =
   | { type: 'AUTH'; accessToken: string; protocolVersion: string }
   | { type: 'REFRESH'; refreshToken: string }
   | { type: 'PING' }
-  | { type: 'INIT_SESSION'; sessionId: string; cols: number; rows: number; adapter: string }
+  | { type: 'INIT_SESSION'; sessionId: string; cols: number; rows: number; adapter: string; attachToTmux?: string; cwd?: string }
   | { type: 'ATTACH_SESSION'; sessionId: string }
   | { type: 'RESIZE'; sessionId: string; cols: number; rows: number }
   | { type: 'QUICK_ACTION'; sessionId: string; payload: string }

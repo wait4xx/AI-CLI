@@ -38,21 +38,22 @@ export default defineConfig({
     },
   },
   server: {
-    // 安全修复[C8]: 添加 CSP 安全响应头
-    headers: {
-      'Content-Security-Policy': [
-        "default-src 'self'",
-        "script-src 'self'",
-        "style-src 'self' 'unsafe-inline'", // Tailwind CSS 需要 unsafe-inline
-        "img-src 'self' data: blob:",
-        "connect-src 'self' ws: wss:",
-        "font-src 'self' data:",
-        "object-src 'none'",
-        "frame-ancestors 'none'",
-        "base-uri 'self'",
-        "form-action 'self'",
-      ].join('; '),
-    },
+    headers: process.env.NODE_ENV === 'production'
+      ? {
+          'Content-Security-Policy': [
+            "default-src 'self'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "connect-src 'self' ws: wss:",
+            "font-src 'self' data:",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+          ].join('; '),
+        }
+      : {},
     proxy: {
       '/api': 'http://localhost:3000',
       '/ws': {

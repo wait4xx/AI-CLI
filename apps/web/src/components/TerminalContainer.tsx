@@ -95,7 +95,7 @@ export function TerminalContainer() {
     logout,
   )
 
-  const { sessionId, connectionPhase, isConnected, fontSize, setFontSize, theme } = useSessionStore()
+  const { sessionId, connectionPhase, isConnected, fontSize, setFontSize, theme, activeAdapter } = useSessionStore()
 
   // Expose sendInjectCode to store so App.tsx / CodeEditor can use it
   useEffect(() => {
@@ -128,12 +128,22 @@ export function TerminalContainer() {
     // Check if we have a cached terminal for this session
     const cached = terminalCache.get(cacheKey)
 
-    if (cached) {
+    if (cached && !(cached as any).isDisposed) {
       term = cached
       fitAddon = fitAddonCache.get(cacheKey)!
-      container.appendChild(term.element!)
-      fitAddon.fit()
+      if (term.element) {
+        container.appendChild(term.element)
+      }
+      // Defer fit so the DOM can settle after re-attaching the terminal element.
+      requestAnimationFrame(() => {
+        try { fitAddon.fit() } catch { /* terminal not fully ready yet */ }
+      })
     } else {
+      // Remove stale cached entry if disposed
+      if (cached) {
+        terminalCache.delete(cacheKey)
+        fitAddonCache.delete(cacheKey)
+      }
       term = new Terminal({
         theme: getXtermTheme(theme),
         fontSize,
@@ -146,7 +156,12 @@ export function TerminalContainer() {
 
       // Load addons in order: WebGL → Canvas fallback (ADR-010)
       try {
-        term.loadAddon(new WebglAddon())
+        const webglAddon = new WebglAddon()
+        webglAddon.onContextLoss(() => {
+          webglAddon.dispose()
+          try { term.loadAddon(new CanvasAddon()) } catch { /* fallback to DOM */ }
+        })
+        term.loadAddon(webglAddon)
         rendererTypeRef.current = 'webgl'
       } catch {
         try {
@@ -161,7 +176,13 @@ export function TerminalContainer() {
       term.loadAddon(new WebLinksAddon())
 
       term.open(container)
-      fitAddon.fit()
+
+      // Defer initial fit to ensure CSS layout is fully resolved before measuring.
+      // A synchronous fit() right after open() often reads zero-height because
+      // flexbox hasn't computed the container's final dimensions yet.
+      requestAnimationFrame(() => {
+        try { fitAddon.fit() } catch { /* may fail in StrictMode double-invoke */ }
+      })
 
       terminalCache.set(cacheKey, term)
       fitAddonCache.set(cacheKey, fitAddon)
@@ -260,15 +281,66 @@ export function TerminalContainer() {
   const accessTokenRef = useRef(accessToken)
   useEffect(() => { accessTokenRef.current = accessToken }, [accessToken])
 
+  // Handle adapter switching and session tab switching
+  const prevAdapterRef = useRef(activeAdapter)
+  const prevSessionIdRef = useRef(sessionId)
+  const adapterSwitchIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const adapterChanged = prevAdapterRef.current !== activeAdapter
+    const sessionChanged = prevSessionIdRef.current !== sessionId
+    prevAdapterRef.current = activeAdapter
+    prevSessionIdRef.current = sessionId
+
+    // Skip first render and no-op re-renders
+    if (!sessionChanged && !adapterChanged) return
+
+    // Skip session change triggered by adapter switch (already handled below)
+    if (adapterSwitchIdRef.current === sessionId) {
+      adapterSwitchIdRef.current = null
+      return
+    }
+
+    // Clear terminal content (screen capture will repopulate)
+    if (termRef.current) {
+      termRef.current.clear()
+    }
+
+    // Disconnect current session
+    if (isConnected || connectionPhase !== 'DISCONNECTED') {
+      disconnect()
+    }
+
+    // Adapter change requires a new session with a different startCommand
+    if (adapterChanged) {
+      const newSessionId = crypto.randomUUID()
+      adapterSwitchIdRef.current = newSessionId
+      useSessionStore.getState().setSession(newSessionId)
+    }
+    // Session tab switch: sessionId is already set by switchSession(),
+    // the connect effect will handle reconnection
+  }, [activeAdapter, sessionId, isConnected, connectionPhase, disconnect])
+
   // Connect on mount when authenticated with session
   useEffect(() => {
     if (!termRef.current || !accessTokenRef.current || !sessionId) return
     if (!isConnected && connectionPhase === 'DISCONNECTED') {
       const { cols, rows } = termRef.current
-      connect(sessionId, cols, rows, termRef.current)
+      const currentSession = useSessionStore.getState().sessions.find(s => s.id === sessionId)
+      connect(sessionId, cols, rows, termRef.current, currentSession?.attachToTmux, currentSession?.cwd)
     }
     // [M5修复] 用 ref 追踪 accessToken，避免 token 刷新导致频繁重连
   }, [sessionId, isConnected, connectionPhase, connect])
+
+  // Re-fit terminal once the WS connection is established so the
+  // terminal dimensions match the actual rendered container.
+  useEffect(() => {
+    if (isConnected) {
+      requestAnimationFrame(() => {
+        fitAddonRef.current?.fit()
+      })
+    }
+  }, [isConnected])
 
   // visibilitychange: DOM detach/reattach (ADR-011)
   useEffect(() => {
@@ -295,15 +367,22 @@ export function TerminalContainer() {
   }, [])
 
   // Cleanup on unmount — disconnect WS and clean cache
+  const unmountedRef = useRef(false)
   useEffect(() => {
+    unmountedRef.current = false
     return () => {
-      disconnect()
-      // Clean up cached terminals on unmount
-      for (const [key, cachedTerm] of terminalCache.entries()) {
-        cachedTerm.dispose()
-        terminalCache.delete(key)
-        fitAddonCache.delete(key)
-      }
+      // In StrictMode, this runs during the cleanup cycle but the component
+      // re-mounts immediately after — only truly dispose on final unmount
+      unmountedRef.current = true
+      requestAnimationFrame(() => {
+        if (!unmountedRef.current) return
+        disconnect()
+        for (const [key, cachedTerm] of terminalCache.entries()) {
+          cachedTerm.dispose()
+          terminalCache.delete(key)
+          fitAddonCache.delete(key)
+        }
+      })
     }
   }, [disconnect])
 

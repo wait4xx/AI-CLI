@@ -32,12 +32,19 @@ function formatFileSize(bytes: number): string {
 
 function buildBreadcrumbs(path: string): { label: string; path: string }[] {
   if (!path) return [{ label: '~', path: '' }]
+  const isAbsolute = path.startsWith('/')
   const parts = path.split('/').filter(Boolean)
-  const crumbs = [{ label: '~', path: '' }]
-  let accumulated = ''
-  for (const part of parts) {
-    accumulated = accumulated ? `${accumulated}/${part}` : part
-    crumbs.push({ label: part, path: accumulated })
+  const crumbs: { label: string; path: string }[] = []
+  if (isAbsolute) {
+    crumbs.push({ label: '/', path: '/' })
+  } else {
+    crumbs.push({ label: '~', path: '' })
+  }
+  for (let i = 0; i < parts.length; i++) {
+    const partialPath = isAbsolute
+      ? '/' + parts.slice(0, i + 1).join('/')
+      : parts.slice(0, i + 1).join('/')
+    crumbs.push({ label: parts[i], path: partialPath })
   }
   return crumbs
 }
@@ -88,11 +95,6 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
     }
   }, [])
 
-  const handleOpen = useCallback(() => {
-    setOpen(true)
-    fetchTree(state.currentPath || '')
-  }, [fetchTree, state.currentPath])
-
   const handleEntryClick = useCallback(async (entry: FileEntry) => {
     if (entry.type === 'directory') {
       fetchTree(entry.path)
@@ -133,13 +135,40 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
     fetchTree(path)
   }, [fetchTree])
 
+  const fetchCwdAndTree = useCallback(async () => {
+    const token = useSessionStore.getState().accessToken
+    const sid = useSessionStore.getState().sessionId
+
+    if (!token || !sid) {
+      fetchTree('')
+      return
+    }
+
+    // Always fetch CWD to track terminal directory changes
+    let cwd = ''
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/fs/cwd?sessionId=${encodeURIComponent(sid)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      if (res.ok) {
+        const data = await res.json()
+        cwd = data.cwd || ''
+      }
+    } catch { /* fallback to root */ }
+
+    fetchTree(cwd)
+  }, [fetchTree])
+
   const breadcrumbs = buildBreadcrumbs(state.currentPath)
 
   return (
-    <Drawer.Root open={open} onOpenChange={setOpen} direction="bottom">
+    <Drawer.Root open={open} onOpenChange={(nextOpen) => {
+      setOpen(nextOpen)
+      if (nextOpen) fetchCwdAndTree()
+    }} direction="bottom">
       <Drawer.Trigger asChild>
         <button
-          onClick={handleOpen}
           className="p-2 rounded-lg hover:bg-white/10 active:bg-white/15 transition-colors"
           aria-label="Browse files"
         >
@@ -194,9 +223,13 @@ export function FileExplorer({ onFileSelect }: FileExplorerProps) {
               {!state.loading && !state.error && state.currentPath && (
                 <button
                   onClick={() => {
+                    const isAbsolute = state.currentPath.startsWith('/')
                     const parentParts = state.currentPath.split('/').filter(Boolean)
                     parentParts.pop()
-                    fetchTree(parentParts.join('/'))
+                    const parentPath = isAbsolute
+                      ? (parentParts.length > 0 ? '/' + parentParts.join('/') : '/')
+                      : parentParts.join('/')
+                    fetchTree(parentPath)
                   }}
                   className="flex items-center gap-2 w-full px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-gray-400 text-sm"
                 >

@@ -11,6 +11,7 @@ import { auditLog } from './audit.js'
 import { SessionRecorder } from './recorder.js'
 import { pinoLogger } from '../lib/logger.js'
 import { SessionStore } from './sessionStore.js'
+import { getConfig } from '../lib/config.js'
 
 // [C2修复] 使用 execFile 替代 exec，避免命令注入
 const execFileAsync = promisify(execFile)
@@ -31,8 +32,10 @@ const DEFAULT_ROWS = 24 // fallback terminal rows when restoring orphan sessions
 interface Session {
   sessionId: string
   ownerId: string   // [C1修复] 会话归属用户ID，用于权限校验
+  adapterName: string
   adapter: CLIAdapter
   ptyProcess: pty.IPty
+  tmuxSessionName: string  // actual tmux session name (aicli-* or external name)
   status: AgentStatus
   termClients: Set<WebSocket>
   ctrlClients: Set<WebSocket>
@@ -106,10 +109,9 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId)
     if (!session || session.status !== 'ERROR') return
 
-    const tmuxSessionName = `aicli-${sessionId}`
     try {
       // [C2修复] 使用 execFile 替代 exec
-      await execFileAsync('tmux', ['has-session', '-t', tmuxSessionName])
+      await execFileAsync('tmux', ['has-session', '-t', session.tmuxSessionName])
       // tmux session is alive — reset to IDLE
       this.updateStatus(session, 'IDLE')
     } catch {
@@ -135,6 +137,8 @@ export class SessionManager extends EventEmitter {
     rows: number,
     adapterName: string,
     ownerId: string,   // [C1修复] 传入会话归属用户ID
+    attachToTmux?: string,  // If provided, attach to existing tmux session
+    cwd?: string,           // Working directory for new sessions (falls back to PROJECT_ROOT)
   ): Session {
     // [V3-2] Validate sessionId first — defense in depth
     if (!SAFE_SESSION_ID.test(sessionId)) {
@@ -142,7 +146,11 @@ export class SessionManager extends EventEmitter {
     }
 
     const existing = this.sessions.get(sessionId)
-    if (existing) return existing
+    if (existing) {
+      // Resize to match current terminal dimensions when reattaching
+      try { existing.ptyProcess.resize(cols, rows) } catch { /* ignore */ }
+      return existing
+    }
 
     const adapter = this.adapters.get(adapterName)
     if (!adapter) {
@@ -156,28 +164,42 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Invalid terminal dimensions: ${cols}x${rows} (allowed: ${TERM_COLS_MIN}-${TERM_COLS_MAX}x${TERM_ROWS_MIN}-${TERM_ROWS_MAX})`)
     }
 
-    const tmuxSessionName = `aicli-${sessionId}`
-    const ptyProcess = pty.spawn(
-      'tmux',
-      [
-        'new-session',
-        '-A',
-        '-s',
-        tmuxSessionName,
-        '-x',
-        String(cols),
-        '-y',
-        String(rows),
-        adapter.startCommand,
-      ],
-      {},
-    )
+    let tmuxSessionName: string
+    let ptyProcess: pty.IPty
+
+    if (attachToTmux) {
+      // Attach to existing tmux session
+      tmuxSessionName = attachToTmux
+      ptyProcess = pty.spawn('tmux', ['attach', '-t', attachToTmux], {})
+    } else {
+      // Create new tmux session
+      tmuxSessionName = `aicli-${sessionId}`
+      ptyProcess = pty.spawn(
+        'tmux',
+        [
+          'new-session',
+          '-A',
+          '-s',
+          tmuxSessionName,
+          '-x',
+          String(cols),
+          '-y',
+          String(rows),
+          '-c',
+          cwd || getConfig().PROJECT_ROOT,
+          adapter.startCommand,
+        ],
+        {},
+      )
+    }
 
     const session: Session = {
       sessionId,
       ownerId,
+      adapterName,
       adapter,
       ptyProcess,
+      tmuxSessionName,
       status: 'IDLE',
       termClients: new Set(),
       ctrlClients: new Set(),
@@ -278,11 +300,10 @@ export class SessionManager extends EventEmitter {
     const candidate = session.adapter.parseStreamData(text)
     if (!candidate || candidate.confidence <= STATE_FUSE_MIN_CONFIDENCE) return
 
-    const tmuxSessionName = `aicli-${session.sessionId}`
     try {
       // [C2修复] 使用 execFile 替代 exec
       const { stdout } = await execFileAsync(
-        'tmux', ['capture-pane', '-p', '-t', tmuxSessionName],
+        'tmux', ['capture-pane', '-p', '-t', session.tmuxSessionName],
       )
       const screenStatus = session.adapter.parseScreenSnapshot(stdout)
 
@@ -337,12 +358,12 @@ export class SessionManager extends EventEmitter {
     if (termWs) {
       session.termClients.add(termWs)
 
-      const tmuxSessionName = `aicli-${sessionId}`
       // [C2修复] 使用 execFile 替代 exec
-      execFileAsync('tmux', ['capture-pane', '-p', '-t', tmuxSessionName])
+      execFileAsync('tmux', ['capture-pane', '-p', '-e', '-t', session.tmuxSessionName])
         .then(({ stdout }) => {
           if (stdout && termWs.readyState === 1) {
-            termWs.send(stdout)
+            // Clear screen + cursor home, then write captured content
+            termWs.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
           }
         })
         .catch(() => { /* intentionally ignored — stdout flush is best-effort */ })
@@ -374,12 +395,11 @@ export class SessionManager extends EventEmitter {
     session.observeClients.add(ws)
 
     // Send current screen to observer
-    const tmuxSessionName = `aicli-${sessionId}`
     // [C2修复] 使用 execFile 替代 exec
-    execFileAsync('tmux', ['capture-pane', '-p', '-t', tmuxSessionName])
+    execFileAsync('tmux', ['capture-pane', '-p', '-e', '-t', session.tmuxSessionName])
       .then(({ stdout }) => {
         if (stdout && ws.readyState === 1) {
-          ws.send(stdout)
+          ws.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
         }
       })
       .catch(() => { /* best-effort tmux capture — may fail if session ended */ })
@@ -498,9 +518,12 @@ export class SessionManager extends EventEmitter {
         if (allTmuxSessions.includes(tmuxName)) {
           const adapter = this.adapters.get(persisted.adapterName)
           if (!adapter) continue
-          pinoLogger.info({ sessionId }, 'Restoring persisted session')
+          // External tmux sessions (non-aicli-*) need attachToTmux to re-attach
+          const isExternal = tmuxName !== `aicli-${sessionId}`
+          const attachToTmux = isExternal ? tmuxName : undefined
+          pinoLogger.info({ sessionId, tmuxName, isExternal }, 'Restoring persisted session')
           try {
-            this.createOrAttachSession(sessionId, DEFAULT_COLS, DEFAULT_ROWS, persisted.adapterName, persisted.ownerId || '')
+            this.createOrAttachSession(sessionId, DEFAULT_COLS, DEFAULT_ROWS, persisted.adapterName, persisted.ownerId || '', attachToTmux)
           } catch (err) {
             pinoLogger.warn({ err, sessionId }, 'Failed to restore persisted session')
           }
@@ -595,12 +618,63 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Get the current working directory of a session's tmux pane.
+   * Returns the path relative to PROJECT_ROOT, or empty string if outside root.
+   *
+   * @param sessionId - Target session id
+   * @returns Relative path from PROJECT_ROOT
+   */
+  async getCwd(sessionId: string): Promise<string> {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+    try {
+      const { stdout } = await execFileAsync('tmux', ['display-message', '-p', '-t', session.tmuxSessionName, '#{pane_current_path}'])
+      const absPath = stdout.trim()
+      if (!absPath) return ''
+      return absPath
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * List all active sessions with details (for frontend restore).
+   */
+  listSessions(): Array<{ sessionId: string; status: AgentStatus; tmuxSessionName: string; adapterName: string }> {
+    return [...this.sessions.values()].map(s => ({
+      sessionId: s.sessionId,
+      status: s.status,
+      tmuxSessionName: s.tmuxSessionName,
+      adapterName: s.adapterName,
+    }))
+  }
+
+  /**
    * Get all active session ids.
    *
    * @returns Array of session id strings
    */
   getSessionIds(): string[] {
     return [...this.sessions.keys()]
+  }
+
+  /**
+   * List available tmux sessions not currently managed by this SessionManager.
+   * Returns name, window count, and attached client count for each session.
+   */
+  async listAvailableTmuxSessions(): Promise<Array<{ name: string; windows: number; attached: number }>> {
+    try {
+      const { stdout } = await execFileAsync(
+        'tmux', ['list-sessions', '-F', '#{session_name}:#{session_windows}:#{session_attached}'],
+      )
+      const managedNames = new Set([...this.sessions.values()].map(s => s.tmuxSessionName))
+      return stdout.split('\n').map(line => {
+        const [name, windows, attached] = line.trim().split(':')
+        return { name, windows: Number(windows) || 0, attached: Number(attached) || 0 }
+      }).filter(s => s.name && !managedNames.has(s.name))
+    } catch {
+      return []
+    }
   }
 
   /**

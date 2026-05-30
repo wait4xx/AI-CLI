@@ -3,6 +3,7 @@
  * 覆盖：渲染表单、输入用户名密码、提交、错误提示显示
  */
 import { describe, it, expect, vi } from 'vitest'
+import { act } from '@testing-library/react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { LoginForm } from '../components/LoginForm'
@@ -87,6 +88,6 @@ describe('LoginForm', () => {
     await user.click(screen.getByRole('button', { name: '登录' }))
 
     expect(screen.getByText('登录中...')).toBeInTheDocument()
-    resolveLogin()
+    await act(() => { resolveLogin() })
   })
 })

@@ -1,15 +1,9 @@
 import { WebSocket } from 'ws'
 import jwt from 'jsonwebtoken'
-import { JwtPayload, PROTOCOL_VERSION, WS_CLOSE_CODE, TERM_PING, TERM_PONG, TERM_COLS_MIN, TERM_COLS_MAX, TERM_ROWS_MIN, TERM_ROWS_MAX, ControlClientMessage } from '@ai-cli/shared'
+import { JwtPayload, TERM_PING, TERM_PONG, TERM_COLS_MIN, TERM_COLS_MAX, TERM_ROWS_MIN, TERM_ROWS_MAX, ControlClientMessage } from '@ai-cli/shared'
 import { SessionManager } from './SessionManager.js'
 import { pinoLogger } from '../lib/logger.js'
 
-enum WSState {
-  UNAUTHENTICATED,
-  AUTHENTICATED,
-}
-
-const AUTH_TIMEOUT_MS = 15000
 const PING_INTERVAL_MS = 30000
 
 /**
@@ -35,45 +29,19 @@ export class WSGateway {
 
   /**
    * Handle a new terminal WebSocket connection.
-   * Performs auth handshake, then accepts ATTACH_SESSION before switching to binary mode.
+   * Auth is already verified at the HTTP upgrade level (query-param token).
+   * Accepts ATTACH_SESSION then switches to binary mode.
    *
    * @param ws - The incoming WebSocket connection
+   * @param user - The authenticated user (verified via query-param JWT)
    */
-  handleTerminalConnection(ws: WebSocket): void {
-    let state = WSState.UNAUTHENTICATED
-    let currentUser: JwtPayload | null = null
+  handleTerminalConnection(ws: WebSocket, user: JwtPayload): void {
     let sessionId: string | null = null
 
-    pinoLogger.info('Terminal WS connected')
-
-    const authTimeout = setTimeout(() => {
-      if (state === WSState.UNAUTHENTICATED) {
-        pinoLogger.warn('Terminal WS auth timeout')
-        ws.close(WS_CLOSE_CODE.AUTH_FAILED, 'Auth timeout')
-      }
-    }, AUTH_TIMEOUT_MS)
+    pinoLogger.info({ userId: user.userId }, 'Terminal WS connected (pre-authenticated)')
 
     ws.on('message', (data: Buffer) => {
-      if (state === WSState.UNAUTHENTICATED) {
-        try {
-          const msg = JSON.parse(data.toString())
-          if (msg.type === 'AUTH') {
-            this.verifyAuth(ws, msg, (payload) => {
-              clearTimeout(authTimeout)
-              state = WSState.AUTHENTICATED
-              currentUser = payload
-              pinoLogger.info({ sessionId: payload.userId }, 'Terminal WS authenticated')
-              ws.send(JSON.stringify({ type: 'AUTH_OK' }))
-            })
-          }
-        } catch (err) {
-          // invalid JSON in UNAUTHENTICATED state, discard
-          pinoLogger.warn({ err }, 'Terminal WS invalid message in unauthenticated state')
-        }
-        return
-      }
-
-      // AUTHENTICATED but no session attached yet — accept ATTACH
+      // No session attached yet — accept ATTACH_SESSION
       if (sessionId === null) {
         try {
           const msg = JSON.parse(data.toString())
@@ -82,24 +50,17 @@ export class WSGateway {
               ws.send(JSON.stringify({ type: 'ERROR', message: 'Session not found' }))
               return
             }
-            // [S2修复] 校验 session 归属
-            if (!currentUser) {
-              ws.send(JSON.stringify({ type: 'ERROR', message: 'Not authenticated' }))
-              return
-            }
             const owner = this.sessionManager.getOwner(msg.sessionId)
-            if (owner && owner !== currentUser.userId) {
+            if (owner && owner !== user.userId) {
               ws.send(JSON.stringify({ type: 'ERROR', message: 'Permission denied' }))
               return
             }
             sessionId = msg.sessionId
             pinoLogger.info({ sessionId }, 'Terminal WS attached to session')
             this.sessionManager.attachClient(sessionId!, ws, undefined)
-            // Switch to binary mode — no more JSON expected
           }
-        } catch (err) {
+        } catch {
           // binary data before ATTACH, discard
-          pinoLogger.warn({ err }, 'Terminal WS invalid message before ATTACH')
         }
         return
       }
@@ -115,7 +76,6 @@ export class WSGateway {
     })
 
     ws.on('close', () => {
-      clearTimeout(authTimeout)
       this.cleanupPing(ws)
       pinoLogger.info({ sessionId }, 'Terminal WS disconnected')
       if (sessionId) {
@@ -130,55 +90,27 @@ export class WSGateway {
 
   /**
    * Handle a new control WebSocket connection.
-   * Performs auth handshake, then dispatches JSON control messages.
+   * Auth is already verified at the HTTP upgrade level (query-param token).
+   * Dispatches JSON control messages immediately.
    *
    * @param ws - The incoming WebSocket connection
+   * @param user - The authenticated user (verified via query-param JWT)
    */
-  handleControlConnection(ws: WebSocket): void {
-    let state = WSState.UNAUTHENTICATED
-    let currentUser: JwtPayload | null = null
+  handleControlConnection(ws: WebSocket, user: JwtPayload): void {
     let currentSessionId: string | null = null
 
-    pinoLogger.info('Control WS connected')
-
-    const authTimeout = setTimeout(() => {
-      if (state === WSState.UNAUTHENTICATED) {
-        pinoLogger.warn('Control WS auth timeout')
-        ws.close(WS_CLOSE_CODE.AUTH_FAILED, 'Auth timeout')
-      }
-    }, AUTH_TIMEOUT_MS)
+    pinoLogger.info({ username: user.username }, 'Control WS connected (pre-authenticated)')
 
     ws.on('message', (raw: Buffer) => {
-      if (state === WSState.UNAUTHENTICATED) {
-        try {
-          const msg = JSON.parse(raw.toString())
-          if (msg.type === 'AUTH') {
-            this.verifyAuth(ws, msg, (payload) => {
-              clearTimeout(authTimeout)
-              state = WSState.AUTHENTICATED
-              currentUser = payload
-              pinoLogger.info({ username: payload.username }, 'Control WS authenticated')
-              ws.send(JSON.stringify({ type: 'AUTH_OK' }))
-            })
-          }
-        } catch {
-          // invalid JSON, discard
-        }
-        return
-      }
-
-      // AUTHENTICATED
       try {
         const msg = JSON.parse(raw.toString())
-        // [C1/W14修复] 传入 currentUser 用于会话权限校验
-        this.handleControlMessage(ws, msg, currentSessionId, currentUser, (sid) => { currentSessionId = sid })
+        this.handleControlMessage(ws, msg, currentSessionId, user, (sid) => { currentSessionId = sid })
       } catch {
         // invalid JSON
       }
     })
 
     ws.on('close', () => {
-      clearTimeout(authTimeout)
       this.cleanupPing(ws)
       pinoLogger.info({ sessionId: currentSessionId }, 'Control WS disconnected')
       if (currentSessionId) {
@@ -190,32 +122,7 @@ export class WSGateway {
     this.setupControlKeepAlive(ws)
   }
 
-  // ========== Auth ==========
-
-  private verifyAuth(
-    ws: WebSocket,
-    msg: { accessToken?: string; protocolVersion?: string },
-    onSuccess: (payload: JwtPayload) => void,
-  ): void {
-    if (msg.protocolVersion && msg.protocolVersion !== PROTOCOL_VERSION) {
-      ws.close(WS_CLOSE_CODE.PROTOCOL_MISMATCH, 'Protocol version mismatch')
-      return
-    }
-
-    if (!msg.accessToken) {
-      pinoLogger.warn('WS auth failed — missing accessToken')
-      ws.close(WS_CLOSE_CODE.AUTH_FAILED, 'Missing access token')
-      return
-    }
-
-    try {
-      const decoded = jwt.verify(msg.accessToken, this.jwtSecret) as JwtPayload
-      onSuccess(decoded)
-    } catch {
-      pinoLogger.warn('WS auth failed — invalid token')
-      ws.close(WS_CLOSE_CODE.AUTH_FAILED, 'Invalid token')
-    }
-  }
+  // ========== Session Access Validation ==========
 
   // [Q3修复] 提取公共的 session 校验逻辑
   private validateSessionAccess(
@@ -274,6 +181,8 @@ export class WSGateway {
 
       case 'INIT_SESSION': {
         const { sessionId, cols, rows, adapter } = msg
+        const attachToTmux = (msg as { attachToTmux?: string }).attachToTmux
+        const cwd = (msg as { cwd?: string }).cwd
         // [C3修复] 校验终端尺寸参数范围
         const safeCols = Math.max(TERM_COLS_MIN, Math.min(TERM_COLS_MAX, Math.floor(cols) || 80))
         const safeRows = Math.max(TERM_ROWS_MIN, Math.min(TERM_ROWS_MAX, Math.floor(rows) || 24))
@@ -283,7 +192,7 @@ export class WSGateway {
             ws.send(JSON.stringify({ type: 'ERROR', message: 'Not authenticated' }))
             break
           }
-          this.sessionManager.createOrAttachSession(sessionId, safeCols, safeRows, adapter, currentUser.userId)
+          this.sessionManager.createOrAttachSession(sessionId, safeCols, safeRows, adapter, currentUser.userId, attachToTmux, cwd)
           this.sessionManager.attachClient(sessionId, undefined, ws)
           setSessionId(sessionId)
           ws.send(JSON.stringify({ type: 'SESSION_READY', sessionId }))

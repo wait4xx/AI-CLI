@@ -7,7 +7,7 @@ import path from 'path'
 import { pinoLogger } from '../lib/logger.js'
 import { getConfig } from '../lib/config.js'
 
-const WHITELIST_PATHS = ['/health', '/api/auth/login', '/api/auth/refresh']
+const WHITELIST_PATHS = ['/health', '/api/auth/login', '/api/auth/refresh', '/ws/terminal', '/ws/control']
 
 export interface StoredUser {
   userId: string

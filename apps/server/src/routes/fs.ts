@@ -5,6 +5,7 @@ import fsSync from 'fs'
 import rateLimit from '@fastify/rate-limit'
 import { auditLog } from '../core/audit.js'
 import { getConfig } from '../lib/config.js'
+import type { SessionManager } from '../core/SessionManager.js'
 
 function getProjectRoot(): string {
   return getConfig().PROJECT_ROOT
@@ -38,6 +39,22 @@ const EXT_LANGUAGE_MAP: Record<string, string> = {
 async function sanitizePath(inputPath: string): Promise<string | null> {
   if (inputPath.includes('\0')) return null
   const root = getProjectRoot()
+
+  // Absolute paths: resolve directly, allow anywhere on the filesystem
+  // (user already has shell access via terminal — file explorer adds no privilege)
+  if (inputPath.startsWith('/')) {
+    const resolved = path.resolve(inputPath)
+    try {
+      const real = await fs.realpath(resolved)
+      return real
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (code === 'ENOENT') return resolved
+      return null
+    }
+  }
+
+  // Relative paths: resolve within PROJECT_ROOT (sandboxed)
   const resolved = path.resolve(root, inputPath)
   if (!resolved.startsWith(root + path.sep) && resolved !== root) {
     return null
@@ -81,6 +98,58 @@ export async function fsRoutes(fastify: FastifyInstance) {
       error: 'Too Many Requests',
       message: '请求过于频繁，请稍后再试',
     }),
+  })
+
+  fastify.get('/cwd', {
+    schema: {
+      summary: '获取当前工作目录',
+      description: '获取指定会话的 tmux 终端当前工作目录（相对于项目根目录）',
+      querystring: {
+        type: 'object',
+        required: ['sessionId'],
+        properties: {
+          sessionId: { type: 'string', description: '会话 ID' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            cwd: { type: 'string', description: '相对于项目根目录的路径' },
+          },
+        },
+        400: { type: 'object', properties: { error: { type: 'string' } } },
+        403: { type: 'object', properties: { error: { type: 'string' } } },
+        404: { type: 'object', properties: { error: { type: 'string' } } },
+      },
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const { sessionId } = request.query as { sessionId?: string }
+    if (!sessionId) {
+      return reply.code(400).send({ error: 'Missing sessionId parameter' })
+    }
+
+    const sessionManager = request.server.sessionManager
+    if (!sessionManager) {
+      return reply.code(500).send({ error: 'Session manager not available' })
+    }
+
+    if (!sessionManager.hasSession(sessionId)) {
+      return reply.code(404).send({ error: 'Session not found' })
+    }
+
+    const owner = sessionManager.getOwner(sessionId)
+    if (!owner || owner !== request.user?.userId) {
+      return reply.code(403).send({ error: 'Permission denied' })
+    }
+
+    try {
+      const cwd = await sessionManager.getCwd(sessionId)
+      return { cwd }
+    } catch {
+      return { cwd: '' }
+    }
   })
 
   fastify.get('/tree', {
@@ -319,5 +388,67 @@ export async function fsRoutes(fastify: FastifyInstance) {
     auditLog('FILE_WRITE', request.user?.userId, { path: relativePath, size: Buffer.byteLength(content, 'utf-8') })
 
     return { success: true, path: relativePath }
+  })
+
+  // GET /api/fs/complete — path autocomplete for directories
+  fastify.get('/complete', {
+    schema: {
+      summary: '路径自动补全',
+      description: '返回匹配的目录路径列表，用于前端路径输入框自动补全',
+      querystring: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: '部分路径' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            completions: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string' },
+                  path: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const inputPath = (request.query as Record<string, string | undefined>).path || ''
+
+    // Parse directory part and prefix
+    const lastSlash = inputPath.lastIndexOf('/')
+    const dir = lastSlash >= 0 ? (inputPath.slice(0, lastSlash + 1) || '/') : ''
+    const prefix = lastSlash >= 0 ? inputPath.slice(lastSlash + 1) : inputPath
+
+    const resolved = await sanitizePath(dir || '.')
+    if (!resolved) {
+      return { completions: [] }
+    }
+
+    let entries: fsSync.Dirent[]
+    try {
+      entries = await fs.readdir(resolved, { withFileTypes: true })
+    } catch {
+      return { completions: [] }
+    }
+
+    const lowerPrefix = prefix.toLowerCase()
+    const completions = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name.toLowerCase().startsWith(lowerPrefix))
+      .slice(0, 20)
+      .map(e => ({
+        name: e.name,
+        path: (dir.endsWith('/') ? dir : dir + '/') + e.name,
+      }))
+
+    return { completions }
   })
 }

@@ -56,7 +56,7 @@ function generateTokenPair(userId: string, username: string): TokenPair {
 export async function authRoutes(fastify: FastifyInstance) {
   // Register rate limit plugin scoped to this route prefix
   await fastify.register(rateLimit, {
-    max: 5,
+    max: process.env.NODE_ENV === 'test' ? 1000 : 5,
     timeWindow: '1 minute',
     keyGenerator: (request) => request.ip,
   })

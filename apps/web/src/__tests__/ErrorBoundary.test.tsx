@@ -85,29 +85,26 @@ describe('ErrorBoundary', () => {
   })
 
   it('重试超过3次后提示刷新页面', () => {
+    let retryCount = 0
+    function AlwaysThrow() {
+      retryCount++
+      throw new Error('persistent error')
+    }
+
     render(
       <ErrorBoundary>
-        <ThrowError shouldThrow={true} />
+        <AlwaysThrow />
       </ErrorBoundary>
     )
 
-    // 模拟3次重试
-    // 第一次错误 → 点击重试 → 重新抛错（handleReset 中 retryCount++）
-    // ErrorBoundary.handleReset 中 next >= 3 时不再重置
-    // 但是 getDerivedStateFromError 会重置 retryCount 为 0
-    // 所以需要连续触发错误来累加 retryCount
-
-    // 先点击重试3次
+    // Click retry 3 times — each time the child re-renders and throws again
     fireEvent.click(screen.getByText('重试'))
     fireEvent.click(screen.getByText('重试'))
     fireEvent.click(screen.getByText('重试'))
 
-    // 第三次重试后 retryCount 应该 >= 3，显示刷新提示
-    // 注意：实际行为取决于 React 是否重新渲染错误子组件
-    // getDerivedStateFromError 会设置 retryCount: 0
-    // 而 handleReset 只递增但不重置 hasError 当 retryCount >= 3
-    // 这意味着第3次重试后 error boundary 保持在错误状态但 retryCount 不满足
-    // 实际上需要通过 setState 手动模拟，这里我们测试静态快照
+    // After 3 retries, should show refresh prompt
+    expect(screen.getByText('多次重试失败，请刷新页面')).toBeInTheDocument()
+    expect(screen.getByText('刷新页面')).toBeInTheDocument()
   })
 
   it('显示警告 emoji', () => {

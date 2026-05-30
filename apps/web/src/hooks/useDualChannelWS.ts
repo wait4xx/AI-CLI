@@ -11,7 +11,12 @@ import { useSessionStore } from '../store/sessionStore'
 import { sendNotification } from '../lib/notifications'
 import { OfflineCache } from '../lib/offlineCache'
 
-const WS_BASE = import.meta.env.VITE_WS_URL || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+const WS_BASE = import.meta.env.VITE_WS_URL || (() => {
+  // Dev: use current host (Vite proxy forwards /ws → backend)
+  // Prod: derive from page protocol
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}`
+})()
 // 安全修复[C5]: 生产环境强制使用 wss://，非 HTTPS 时发出警告
 if (import.meta.env.PROD && window.location.protocol === 'http:') {
   console.warn(
@@ -44,7 +49,7 @@ const RESIZE_DEBOUNCE = 200
 const RESIZE_THROTTLE = 1_000
 
 interface UseDualChannelWS {
-  connect: (sessionId: string, cols: number, rows: number, term: Terminal) => void
+  connect: (sessionId: string, cols: number, rows: number, term: Terminal, attachToTmux?: string, cwd?: string) => void
   disconnect: () => void
   termWs: WebSocket | null
   ctrlWs: WebSocket | null
@@ -152,43 +157,23 @@ export function useDualChannelWS(
     if (!token) { onAuthFailure(); return }
 
     store.getState().setConnected('CONNECTING_TERM')
-    const termWs = new WebSocket(`${WS_BASE}/ws/terminal`)
+    const termWs = new WebSocket(`${WS_BASE}/ws/terminal?token=${encodeURIComponent(token)}`)
     termWs.binaryType = 'arraybuffer'
     termWsRef.current = termWs
 
     termWs.onopen = () => {
-      const auth: ControlClientMessage = {
-        type: 'AUTH',
-        accessToken: token,
-        protocolVersion: PROTOCOL_VERSION,
-      }
-      termWs.send(JSON.stringify(auth))
-    }
-
-    termWs.onmessage = (event) => {
-      if (typeof event.data === 'string') {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'AUTH_OK') {
-            const attach: ControlClientMessage = { type: 'ATTACH_SESSION', sessionId: s.sessionId }
-            termWs.send(JSON.stringify(attach))
-            termWs.onmessage = (ev) => {
-              if (ev.data instanceof ArrayBuffer) {
-                const buf = new Uint8Array(ev.data)
-                if (buf.length === 1 && buf[0] === 0x01) return
-                t.write(buf)
-              }
-            }
-            startTermPing()
-            store.getState().setConnected('CONNECTED')
-            isConnectingRef.current = false
-            return
-          }
-        } catch {
-          // Ignore — connection attempt failed, will retry via onclose
+      const attach: ControlClientMessage = { type: 'ATTACH_SESSION', sessionId: s.sessionId }
+      termWs.send(JSON.stringify(attach))
+      termWs.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) {
+          const buf = new Uint8Array(ev.data)
+          if (buf.length === 1 && buf[0] === 0x01) return
+          t.write(buf)
         }
-        return
       }
+      startTermPing()
+      store.getState().setConnected('CONNECTED')
+      isConnectingRef.current = false
     }
 
     termWs.onclose = (event) => {
@@ -221,41 +206,27 @@ export function useDualChannelWS(
     if (!token) { onAuthFailure(); return }
 
     store.getState().setConnected('CONNECTING_CTRL')
-    const ctrlWs = new WebSocket(`${WS_BASE}/ws/control`)
+    const ctrlWs = new WebSocket(`${WS_BASE}/ws/control?token=${encodeURIComponent(token)}`)
     ctrlWsRef.current = ctrlWs
 
     ctrlWs.onopen = () => {
-      const auth: ControlClientMessage = {
-        type: 'AUTH',
-        accessToken: token,
-        protocolVersion: PROTOCOL_VERSION,
+      // Token already sent via query param — send INIT_SESSION immediately
+      const init: ControlClientMessage = {
+        type: 'INIT_SESSION',
+        sessionId: s.sessionId,
+        cols: s.cols,
+        rows: s.rows,
+        adapter: useSessionStore.getState().activeAdapter ?? 'claude',
       }
-      ctrlWs.send(JSON.stringify(auth))
+      ctrlWs.send(JSON.stringify(init))
     }
 
-    let authenticated = false
     ctrlWs.onmessage = (event) => {
       if (typeof event.data !== 'string') return
       try {
         const msg: ControlServerMessage = JSON.parse(event.data)
-        // 安全修复[C7]: 运行时校验消息类型
         if (!isValidControlMsg(msg)) {
           console.warn('[安全警告] 收到无效的控制消息类型，已丢弃:', msg)
-          return
-        }
-        if (!authenticated) {
-          if (msg.type === 'AUTH_OK') {
-            authenticated = true
-            const init: ControlClientMessage = {
-              type: 'INIT_SESSION',
-              sessionId: s.sessionId,
-              cols: s.cols,
-              rows: s.rows,
-              adapter: useSessionStore.getState().activeAdapter ?? 'claude',
-            }
-            ctrlWs.send(JSON.stringify(init))
-            return
-          }
           return
         }
         if (msg.type === 'SESSION_READY') {
@@ -331,11 +302,11 @@ export function useDualChannelWS(
     }
   }
 
-  function connectInternal(sessionId: string, cols: number, rows: number, term: Terminal) {
+  function connectInternal(sessionId: string, cols: number, rows: number, term: Terminal, attachToTmux?: string, cwd?: string) {
     if (isConnectingRef.current) return
     isConnectingRef.current = true
 
-    store.getState().setConnected('CONNECTING_TERM')
+    store.getState().setConnected('CONNECTING_CTRL')
 
     const token = getAccessToken()
     if (!token) {
@@ -350,164 +321,35 @@ export function useDualChannelWS(
     // Initialize offline cache
     offlineCacheRef.current = new OfflineCache(sessionId)
 
-    // --- Terminal WS ---
-    const termWs = new WebSocket(`${WS_BASE}/ws/terminal`)
-    termWs.binaryType = 'arraybuffer'
-    termWsRef.current = termWs
-
-    termWs.onopen = () => {
-      const auth: ControlClientMessage = {
-        type: 'AUTH',
-        accessToken: token,
-        protocolVersion: PROTOCOL_VERSION,
-      }
-      termWs.send(JSON.stringify(auth))
-    }
-
-    termWs.onmessage = (event) => {
-      // Before binary mode switch, messages are JSON
-      if (typeof event.data === 'string') {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'AUTH_OK') {
-            // Send ATTACH
-            const attach: ControlClientMessage = { type: 'ATTACH_SESSION', sessionId }
-            termWs.send(JSON.stringify(attach))
-
-            // Switch to binary mode — subsequent messages are binary
-            termWs.onmessage = (ev) => {
-              if (ev.data instanceof ArrayBuffer) {
-                const buf = new Uint8Array(ev.data)
-                if (buf.length === 1 && buf[0] === 0x01) return
-                term.write(buf)
-                // Cache screen data for offline mode
-                offlineCacheRef.current?.cacheScreen(new TextDecoder().decode(buf))
-              }
-            }
-
-            startTermPing()
-
-            // Terminal connected, now connect Control
-            connectControl(token, sessionId, cols, rows)
-            return
-          }
-        } catch {
-          // Ignore malformed JSON
-        }
-        return
-      }
-
-      // Binary message before AUTH_OK — discard
-      if (event.data instanceof ArrayBuffer) {
-        const buf = new Uint8Array(event.data)
-        if (buf.length === 1 && buf[0] === 0x01) return
-        term.write(buf)
-      }
-    }
-
-    termWs.onclose = (event) => {
-      if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
-
-      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) {
-        window.location.reload()
-        return
-      }
-
-      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) {
-        handleAuthFailureAndRetry()
-        return
-      }
-
-      // Close ctrl if term failed during CONNECTING_TERM
-      if (store.getState().connectionPhase === 'CONNECTING_TERM') {
-        closeSockets()
-        clearAllTimers()
-        store.getState().setDisconnected()
-        isConnectingRef.current = false
-        scheduleReconnect()
-      } else if (store.getState().isConnected) {
-        // Terminal closed unexpectedly but control may still be up — reconnect only terminal
-        reconnectTermOnly()
-      }
-    }
-
-    termWs.onerror = () => {
-      // onclose will handle cleanup
-    }
-  }
-
-  function connectControl(token: string, sessionId: string, cols: number, rows: number) {
-    store.getState().setConnected('CONNECTING_CTRL')
-
-    const ctrlWs = new WebSocket(`${WS_BASE}/ws/control`)
+    // --- Control WS (connect FIRST to create session) ---
+    const ctrlWs = new WebSocket(`${WS_BASE}/ws/control?token=${encodeURIComponent(token)}`)
     ctrlWsRef.current = ctrlWs
 
     ctrlWs.onopen = () => {
-      const auth: ControlClientMessage = {
-        type: 'AUTH',
-        accessToken: token,
-        protocolVersion: PROTOCOL_VERSION,
+      const init: ControlClientMessage = {
+        type: 'INIT_SESSION',
+        sessionId,
+        cols,
+        rows,
+        adapter: useSessionStore.getState().activeAdapter ?? 'claude',
+        ...(attachToTmux ? { attachToTmux } : {}),
+        ...(cwd ? { cwd } : {}),
       }
-      ctrlWs.send(JSON.stringify(auth))
+      ctrlWs.send(JSON.stringify(init))
     }
-
-    let authenticated = false
 
     ctrlWs.onmessage = (event) => {
       if (typeof event.data !== 'string') return
-
       try {
         const msg: ControlServerMessage = JSON.parse(event.data)
-        // 安全修复[C7]: 运行时校验消息类型
-        if (!isValidControlMsg(msg)) {
-          console.warn('[安全警告] 收到无效的控制消息类型，已丢弃:', msg)
-          return
-        }
-
-        if (!authenticated) {
-          if (msg.type === 'AUTH_OK') {
-            authenticated = true
-            const init: ControlClientMessage = {
-              type: 'INIT_SESSION',
-              sessionId,
-              cols,
-              rows,
-              adapter: useSessionStore.getState().activeAdapter ?? 'claude',
-            }
-            ctrlWs.send(JSON.stringify(init))
-            return
-          }
-          // Discard non-AUTH_OK before auth
-          return
-        }
+        if (!isValidControlMsg(msg)) return
 
         if (msg.type === 'SESSION_READY') {
-          // Both channels connected
-          store.getState().setConnected('CONNECTED')
-          store.getState().setSession(sessionId)
-          isConnectingRef.current = false
-          reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
-          reconnectCountRef.current = 0
-          setReconnectCount(0)
-
+          // Session created — now connect terminal
+          connectTerminalAfterSessionReady(token, sessionId, term)
           startCtrlPing()
-
-          // Flush queued offline inputs on reconnect
-          if (offlineCacheRef.current?.hasQueuedInputs()) {
-            offlineCacheRef.current.flushInputs((data) => sendInput(data))
-          }
-
-          // Ctrl+L to trigger pty redraw on reconnect (V3-1: save count before reset above)
-          const wasReconnect = reconnectCount > 0
-          if (wasReconnect) {
-            const termWs = termWsRef.current
-            if (termWs && termWs.readyState === WebSocket.OPEN) {
-              termWs.send('\x0c')
-            }
-          }
           return
         }
-
         handleCtrlMessage(msg)
       } catch {
         // Ignore malformed JSON
@@ -516,18 +358,8 @@ export function useDualChannelWS(
 
     ctrlWs.onclose = (event) => {
       if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
-
-      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) {
-        window.location.reload()
-        return
-      }
-
-      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) {
-        handleAuthFailureAndRetry()
-        return
-      }
-
-      // If connected, only reconnect control channel
+      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
       if (store.getState().isConnected) {
         reconnectCtrlOnly()
       } else if (store.getState().connectionPhase === 'CONNECTING_CTRL') {
@@ -539,10 +371,56 @@ export function useDualChannelWS(
       }
     }
 
-    ctrlWs.onerror = () => {
-      // onclose will handle cleanup
+    ctrlWs.onerror = () => {}
+
+    // --- Terminal WS (deferred — will connect after SESSION_READY) ---
+    function connectTerminalAfterSessionReady(tk: string, sid: string, t: Terminal) {
+      store.getState().setConnected('CONNECTING_TERM')
+
+      const termWs = new WebSocket(`${WS_BASE}/ws/terminal?token=${encodeURIComponent(tk)}`)
+      termWs.binaryType = 'arraybuffer'
+      termWsRef.current = termWs
+
+      termWs.onopen = () => {
+        const attach: ControlClientMessage = { type: 'ATTACH_SESSION', sessionId: sid }
+        termWs.send(JSON.stringify(attach))
+
+        termWs.onmessage = (ev) => {
+          if (ev.data instanceof ArrayBuffer) {
+            const buf = new Uint8Array(ev.data)
+            if (buf.length === 1 && buf[0] === 0x01) return
+            t.write(buf)
+            offlineCacheRef.current?.cacheScreen(new TextDecoder().decode(buf))
+          }
+        }
+
+        startTermPing()
+        store.getState().setConnected('CONNECTED')
+        isConnectingRef.current = false
+        reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+        reconnectCountRef.current = 0
+        setReconnectCount(0)
+
+        if (offlineCacheRef.current?.hasQueuedInputs()) {
+          offlineCacheRef.current.flushInputs((data) => sendInput(data))
+        }
+      }
+
+      termWs.onclose = (event) => {
+        if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
+        if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
+        if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
+        if (store.getState().isConnected) {
+          reconnectTermOnly()
+        } else {
+          scheduleReconnect()
+        }
+      }
+
+      termWs.onerror = () => {}
     }
   }
+
 
   async function handleAuthFailureAndRetry() {
     // Pause reconnecting, try to refresh the token first
@@ -569,13 +447,13 @@ export function useDualChannelWS(
     }
   }
 
-  const connect = useCallback((sessionId: string, cols: number, rows: number, term: Terminal) => {
+  const connect = useCallback((sessionId: string, cols: number, rows: number, term: Terminal, attachToTmux?: string, cwd?: string) => {
     // Reset reconnect state for a fresh connect
     reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
     closeSockets()
     clearAllTimers()
     isConnectingRef.current = false
-    connectInternal(sessionId, cols, rows, term)
+    connectInternal(sessionId, cols, rows, term, attachToTmux, cwd)
   }, [])
 
   const disconnect = useCallback(() => {

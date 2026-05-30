@@ -5,6 +5,8 @@ interface SessionEntry {
   id: string
   status: AgentStatus
   label: string
+  attachToTmux?: string  // if set, this session connects to an existing tmux session
+  cwd?: string            // working directory for new sessions
 }
 
 interface SessionState {
@@ -35,7 +37,7 @@ interface SessionState {
   // Actions
   setConnected: (phase: SessionState['connectionPhase']) => void
   setDisconnected: () => void
-  setSession: (sessionId: string) => void
+  setSession: (sessionId: string, label?: string, attachToTmux?: string, cwd?: string) => void
   setAgentStatus: (status: AgentStatus) => void
   setTokens: (accessToken: string, refreshToken: string) => void
   setFontSize: (size: number) => void
@@ -45,6 +47,7 @@ interface SessionState {
   removeSession: (index: number) => void
   updateSessionStatus: (sessionId: string, status: AgentStatus) => void
   switchSession: (index: number) => void
+  loadSessions: (sessions: SessionEntry[]) => void
   reset: () => void
 }
 
@@ -59,7 +62,7 @@ const initialState = {
   refreshToken: null as string | null,
   fontSize: 14,
   theme: 'dark' as const,
-  activeAdapter: 'claude',
+  activeAdapter: 'shell',
   sendInjectCode: null as ((code: string) => void) | null,
 }
 
@@ -78,13 +81,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       connectionPhase: 'DISCONNECTED',
     }),
 
-  setSession: (sessionId) => {
+  setSession: (sessionId, label?, attachToTmux?, cwd?) => {
     const { sessions } = get()
     const existing = sessions.find((s) => s.id === sessionId)
     if (!existing) {
       set({
         sessionId,
-        sessions: [...sessions, { id: sessionId, status: 'IDLE', label: sessionId.slice(0, 8) }],
+        sessions: [...sessions, { id: sessionId, status: 'IDLE', label: label || sessionId.slice(0, 8), attachToTmux, cwd }],
         activeSessionIndex: sessions.length,
       })
     } else {
@@ -160,6 +163,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionIndex: index,
         sessionId: sessions[index].id,
         agentStatus: sessions[index].status,
+      })
+    }
+  },
+
+  loadSessions: (sessions) => {
+    if (sessions.length > 0) {
+      set({
+        sessions,
+        activeSessionIndex: 0,
+        sessionId: sessions[0].id,
+        agentStatus: sessions[0].status,
       })
     }
   },
