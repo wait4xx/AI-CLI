@@ -28,7 +28,7 @@ describe('ErrorBoundary', () => {
     render(
       <ErrorBoundary>
         <ThrowError shouldThrow={false} />
-      </ErrorBoundary>
+      </ErrorBoundary>,
     )
     expect(screen.getByText('正常内容')).toBeInTheDocument()
   })
@@ -37,7 +37,7 @@ describe('ErrorBoundary', () => {
     render(
       <ErrorBoundary>
         <ThrowError shouldThrow={true} />
-      </ErrorBoundary>
+      </ErrorBoundary>,
     )
     expect(screen.getByText('应用发生了错误')).toBeInTheDocument()
     expect(screen.getByText('测试错误消息')).toBeInTheDocument()
@@ -48,7 +48,7 @@ describe('ErrorBoundary', () => {
     render(
       <ErrorBoundary fallback={<div>自定义错误页面</div>}>
         <ThrowError shouldThrow={true} />
-      </ErrorBoundary>
+      </ErrorBoundary>,
     )
     expect(screen.getByText('自定义错误页面')).toBeInTheDocument()
     // 默认的 fallback 内容不应出现
@@ -69,7 +69,7 @@ describe('ErrorBoundary', () => {
     const { rerender } = render(
       <ErrorBoundary>
         <ThrowError shouldThrow={true} />
-      </ErrorBoundary>
+      </ErrorBoundary>,
     )
 
     expect(screen.getByText('应用发生了错误')).toBeInTheDocument()
@@ -85,16 +85,14 @@ describe('ErrorBoundary', () => {
   })
 
   it('重试超过3次后提示刷新页面', () => {
-    let retryCount = 0
     function AlwaysThrow() {
-      retryCount++
       throw new Error('persistent error')
     }
 
     render(
       <ErrorBoundary>
         <AlwaysThrow />
-      </ErrorBoundary>
+      </ErrorBoundary>,
     )
 
     // Click retry 3 times — each time the child re-renders and throws again
@@ -111,7 +109,7 @@ describe('ErrorBoundary', () => {
     render(
       <ErrorBoundary>
         <ThrowError shouldThrow={true} />
-      </ErrorBoundary>
+      </ErrorBoundary>,
     )
     expect(screen.getByText('⚠️')).toBeInTheDocument()
   })

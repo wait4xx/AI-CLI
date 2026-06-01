@@ -94,7 +94,7 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
     const cacheKey = panelId
     const cached = terminalCache.get(cacheKey)
 
-    if (cached && !(cached as any).isDisposed) {
+    if (cached && !('isDisposed' in cached && (cached as { isDisposed?: boolean }).isDisposed)) {
       term = cached
       fitAddon = fitAddonCache.get(cacheKey)!
       if (term.element && !term.element.parentElement) {
@@ -214,7 +214,9 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
       if (style) style.remove()
       keyboardAdapter.destroy()
       gestureHandler.destroy()
-      container.removeEventListener('wheel', handleWheelCapture, { capture: true } as any)
+      container.removeEventListener('wheel', handleWheelCapture, {
+        capture: true,
+      } as EventListenerOptions)
       if (term.element && term.element.parentNode) {
         term.element.parentNode.removeChild(term.element)
       }
@@ -223,7 +225,7 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
 
   useEffect(() => {
     const t = termRef.current
-    if (t && !(t as any).isDisposed) {
+    if (t && !('isDisposed' in t && (t as { isDisposed?: boolean }).isDisposed)) {
       t.options.fontSize = fontSize
       try {
         fitAddonRef.current?.fit()
@@ -235,7 +237,7 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
 
   useEffect(() => {
     const t = termRef.current
-    if (t && !(t as any).isDisposed) {
+    if (t && !('isDisposed' in t && (t as { isDisposed?: boolean }).isDisposed)) {
       t.options.theme = toXtermTheme(getTerminalTheme(terminalTheme))
       try {
         fitAddonRef.current?.fit()
@@ -356,7 +358,7 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
       }
       const t = termRef.current
       if (!t || t.cols < 2 || t.rows < 2) {
-        const raf2 = requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
           if (cancelled) return
           try {
             fitAddonRef.current?.fit()
@@ -443,7 +445,10 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
         const panelStillExists = findNode(splitRoot, panelId)
         if (!panelStillExists) {
           const cached = terminalCache.get(panelId)
-          if (cached && !(cached as any).isDisposed) {
+          if (
+            cached &&
+            !('isDisposed' in cached && (cached as { isDisposed?: boolean }).isDisposed)
+          ) {
             try {
               cached.dispose()
             } catch {

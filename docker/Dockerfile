@@ -26,6 +26,13 @@ FROM deps AS build
 RUN pnpm build
 
 # ============================================================
+# Stage 2b: prod-deps — prune devDependencies after build
+# ============================================================
+FROM build AS prod-deps
+
+RUN pnpm prune --prod
+
+# ============================================================
 # Stage 3: runtime — minimal production image
 # ============================================================
 FROM node:20-bookworm-slim AS runtime
@@ -54,11 +61,11 @@ COPY --from=build /app/apps/server/package.json ./apps/server/
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/packages/shared/package.json ./packages/shared/
 
-# Install production dependencies only
-COPY --from=build /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/package.json /app/turbo.json ./
-RUN corepack enable && corepack prepare pnpm@8.15.4 --activate \
-    && pnpm install --frozen-lockfile --prod \
-    && pnpm store prune
+# Copy production node_modules from prod-deps stage (pruned, no devDeps)
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/apps/server/node_modules ./apps/server/node_modules
+COPY --from=prod-deps /app/apps/web/node_modules ./apps/web/node_modules
+COPY --from=prod-deps /app/packages/shared/node_modules ./packages/shared/node_modules
 
 # Create workspace directory with correct ownership
 RUN mkdir -p /workspace && chown -R appuser:appuser /app /workspace

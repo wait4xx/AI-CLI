@@ -5,11 +5,6 @@ function getStorageKey(sessionId: string | null): string {
 }
 const MAX_QUEUED_INPUTS = 1000
 
-interface CachedState {
-  screenSnapshot: string
-  timestamp: number
-}
-
 export class OfflineCache {
   private screenSnapshot: string = ''
   private inputQueue: Array<string | Uint8Array> = []
@@ -57,7 +52,10 @@ export class OfflineCache {
   }
 
   // [M3修复] Uint8Array 转 base64 序列化
-  private serializeInput(input: string | Uint8Array): { type: 'string' | 'uint8array'; value: string } {
+  private serializeInput(input: string | Uint8Array): {
+    type: 'string' | 'uint8array'
+    value: string
+  } {
     if (typeof input === 'string') return { type: 'string', value: input }
     // Uint8Array → base64
     let binary = ''
@@ -77,12 +75,15 @@ export class OfflineCache {
   private persist(): void {
     try {
       const serializableInputs = this.inputQueue.map((i) => this.serializeInput(i))
-      sessionStorage.setItem(getStorageKey(this.sessionId), JSON.stringify({
-        screenSnapshot: this.screenSnapshot,
-        inputQueue: serializableInputs,
-        sessionId: this.sessionId,
-        timestamp: Date.now(),
-      }))
+      sessionStorage.setItem(
+        getStorageKey(this.sessionId),
+        JSON.stringify({
+          screenSnapshot: this.screenSnapshot,
+          inputQueue: serializableInputs,
+          sessionId: this.sessionId,
+          timestamp: Date.now(),
+        }),
+      )
     } catch {
       // sessionStorage may be full or unavailable
     }
