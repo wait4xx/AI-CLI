@@ -22,7 +22,7 @@ describe('useSessionStore', () => {
       expect(state.accessToken).toBeNull()
       expect(state.refreshToken).toBeNull()
       expect(state.fontSize).toBe(14)
-      expect(state.theme).toBe('dark')
+      expect(state.uiTheme).toBe('dark')
       expect(state.activeAdapter).toBe('shell')
     })
   })
@@ -162,8 +162,8 @@ describe('useSessionStore', () => {
     })
 
     it('should set theme', () => {
-      useSessionStore.getState().setTheme('light')
-      expect(useSessionStore.getState().theme).toBe('light')
+      useSessionStore.getState().setUiTheme('light')
+      expect(useSessionStore.getState().uiTheme).toBe('light')
     })
 
     it('should validate adapter against whitelist', () => {
@@ -186,7 +186,7 @@ describe('useSessionStore', () => {
       useSessionStore.getState().setConnected('CONNECTED')
       useSessionStore.getState().setAgentStatus('RUNNING')
       useSessionStore.getState().setFontSize(20)
-      useSessionStore.getState().setTheme('light')
+      useSessionStore.getState().setUiTheme('light')
       useSessionStore.getState().setActiveAdapter('shell')
 
       useSessionStore.getState().reset()
@@ -198,7 +198,7 @@ describe('useSessionStore', () => {
       expect(state.refreshToken).toBeNull()
       expect(state.agentStatus).toBe('IDLE')
       expect(state.fontSize).toBe(14)
-      expect(state.theme).toBe('dark')
+      expect(state.uiTheme).toBe('dark')
       expect(state.activeAdapter).toBe('shell')
     })
   })

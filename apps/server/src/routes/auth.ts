@@ -195,8 +195,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       auditLog('USER_CREATE', request.user?.userId, { createdUser: username })
       pinoLogger.info({ by: request.user?.username, createdUser: username }, 'User created')
 
-      const safe = { ...newUser }
-      delete safe.passwordHash
+      const { passwordHash: _, ...safe } = newUser
       return reply.code(201).send(safe)
     },
   )

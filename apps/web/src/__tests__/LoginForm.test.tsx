@@ -16,7 +16,7 @@ describe('LoginForm', () => {
     expect(screen.getByPlaceholderText('用户名')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('密码')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '登录' })).toBeInTheDocument()
-    expect(screen.getByText('AI CLI Mobile')).toBeInTheDocument()
+    expect(screen.getByText('AI CLI')).toBeInTheDocument()
   })
 
   it('输入用户名和密码后提交按钮可用', async () => {
@@ -79,7 +79,12 @@ describe('LoginForm', () => {
   it('提交中时按钮显示加载状态', async () => {
     // 创建一个永不 resolve 的 promise 来模拟加载状态
     let resolveLogin: () => void = () => {}
-    const onLogin = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { resolveLogin = resolve }))
+    const onLogin = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLogin = resolve
+        }),
+    )
     render(<LoginForm onLogin={onLogin} />)
 
     const user = userEvent.setup()
@@ -88,6 +93,8 @@ describe('LoginForm', () => {
     await user.click(screen.getByRole('button', { name: '登录' }))
 
     expect(screen.getByText('登录中...')).toBeInTheDocument()
-    await act(() => { resolveLogin() })
+    await act(() => {
+      resolveLogin()
+    })
   })
 })

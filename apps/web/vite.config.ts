@@ -47,18 +47,21 @@ export default defineConfig({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          xterm: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
-          codemirror: [
-            '@uiw/react-codemirror',
-            '@codemirror/lang-javascript',
-            '@codemirror/lang-python',
-            '@codemirror/lang-json',
-            '@codemirror/lang-markdown',
-            '@codemirror/lang-css',
-            '@codemirror/lang-html',
-          ],
-          'vendor-react': ['react', 'react-dom'],
+        manualChunks(id) {
+          if (
+            id.includes('@xterm/xterm') ||
+            id.includes('@xterm/addon-fit') ||
+            id.includes('@xterm/addon-web-links')
+          )
+            return 'xterm'
+          if (id.includes('@uiw/react-codemirror') || id.includes('@codemirror/lang-'))
+            return 'codemirror'
+          if (
+            id.includes('react-dom') ||
+            id.endsWith('react/jsx-runtime.js') ||
+            id.endsWith('/react/index.js')
+          )
+            return 'vendor-react'
         },
       },
     },

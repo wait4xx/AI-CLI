@@ -34,14 +34,15 @@ describe('SessionTabs', () => {
     expect(tabButtons.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('显示 session id 前8位', () => {
+  it('显示 session label 或 id 前8位', () => {
     useSessionStore.getState().addSession()
     useSessionStore.getState().addSession()
     const sessions = useSessionStore.getState().sessions
 
     render(<SessionTabs />)
+    // addSession assigns a label like "Term N", component shows label || id.slice(0,8)
     sessions.forEach((s) => {
-      expect(screen.getByText(s.id.slice(0, 8))).toBeInTheDocument()
+      expect(screen.getByText(s.label || s.id.slice(0, 8))).toBeInTheDocument()
     })
   })
 
@@ -52,8 +53,8 @@ describe('SessionTabs', () => {
 
     // 第一个 session 应该是活跃的（activeSessionIndex = 0）
     const firstTab = screen.getAllByRole('button')[0]
-    expect(firstTab.className).toContain('bg-dark-border')
-    expect(firstTab.className).toContain('text-gray-100')
+    expect(firstTab.className).toContain('bg-white/15')
+    expect(firstTab.className).toContain('text-white')
   })
 
   it('点击标签切换 session', async () => {
@@ -64,8 +65,8 @@ describe('SessionTabs', () => {
     render(<SessionTabs />)
 
     const user = userEvent.setup()
-    // 点击第二个标签
-    const secondTabText = sessions[1].id.slice(0, 8)
+    // 点击第二个标签 — component shows label || id.slice(0,8)
+    const secondTabText = sessions[1].label || sessions[1].id.slice(0, 8)
     await user.click(screen.getByText(secondTabText))
 
     expect(useSessionStore.getState().activeSessionIndex).toBe(1)
