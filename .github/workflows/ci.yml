@@ -93,14 +93,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lowercase repository name
+        id: repo
+        run: echo "lower=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
-            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/{0}:{1}', github.repository, github.ref_name) || '' }}
+            ghcr.io/${{ steps.repo.outputs.lower }}:latest
+            ghcr.io/${{ steps.repo.outputs.lower }}:${{ github.sha }}
+            ${{ startsWith(github.ref, 'refs/tags/v') && format('ghcr.io/{0}:{1}', steps.repo.outputs.lower, github.ref_name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
