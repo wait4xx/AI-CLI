@@ -25,7 +25,7 @@ import { useUiTheme } from '../hooks/useUiTheme'
 
 interface FileExplorerProps {
   onFileSelect: (path: string, content: string, language: string) => void
-  onFileOpenInNewTab?: (path: string, content: string, language: string) => void
+  _onFileOpenInNewTab?: (path: string, content: string, language: string) => void
   onFileOpenInSplit?: (path: string, content: string, language: string) => void
 }
 
