@@ -47,6 +47,8 @@ const JWT_REFRESH_SECRET = 'test-refresh-secret-at-least-32-characters'
 const defaultUser: JwtPayload = {
   userId: 'user-1',
   username: 'test',
+  role: 'admin',
+  tokenVersion: 0,
   iat: 1234567890,
   exp: 1234571490,
 }
@@ -55,6 +57,8 @@ function otherUser(): JwtPayload {
   return {
     userId: 'user-2',
     username: 'other',
+    role: 'user',
+    tokenVersion: 0,
     iat: 1234567890,
     exp: 1234571490,
   }

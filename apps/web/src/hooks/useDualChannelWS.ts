@@ -1,9 +1,10 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import {
-  PROTOCOL_VERSION,
   WS_CLOSE_CODE,
   TERM_PING,
+  TERM_PONG,
+  TERM_SERVER_PING,
   type ControlClientMessage,
   type ControlServerMessage,
 } from '@ai-cli/shared'
@@ -11,27 +12,67 @@ import { useSessionStore } from '../store/sessionStore'
 import { sendNotification } from '../lib/notifications'
 import { OfflineCache } from '../lib/offlineCache'
 
-const WS_BASE = import.meta.env.VITE_WS_URL || (() => {
-  // Dev: use current host (Vite proxy forwards /ws → backend)
-  // Prod: derive from page protocol
-  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}`
-})()
+const WS_BASE =
+  import.meta.env.VITE_WS_URL ||
+  (() => {
+    // Dev: use current host (Vite proxy forwards /ws → backend)
+    // Prod: derive from page protocol
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    return `${proto}://${window.location.host}`
+  })()
 // 安全修复[C5]: 生产环境强制使用 wss://，非 HTTPS 时发出警告
 if (import.meta.env.PROD && window.location.protocol === 'http:') {
   console.warn(
     '[安全警告] 当前页面使用 HTTP 协议，WebSocket 将以明文 ws:// 传输。' +
-    '生产环境应始终使用 HTTPS 以确保 WebSocket 加密传输(wss://)。'
+      '生产环境应始终使用 HTTPS 以确保 WebSocket 加密传输(wss://)。',
   )
 }
 
 // 安全修复[C7]: 运行时消息类型校验
 const CONTROL_MSG_TYPES = new Set([
-  'AUTH', 'AUTH_OK', 'ATTACH_SESSION', 'INIT_SESSION', 'RESIZE',
-  'QUICK_ACTION', 'INJECT_CODE', 'OBSERVE_SESSION', 'PING', 'PONG',
-  'STATUS_UPDATE', 'SESSION_READY', 'TOKEN_RENEWED', 'ERROR',
-  // [M16修复] 补充录制相关消息类型
-  'RECORDING_DATA', 'RECORDING_STATUS', 'START_RECORDING', 'STOP_RECORDING', 'GET_RECORDING',
+  'AUTH',
+  'AUTH_OK',
+  'ATTACH_SESSION',
+  'INIT_SESSION',
+  'RESIZE',
+  'QUICK_ACTION',
+  'INJECT_CODE',
+  'OBSERVE_SESSION',
+  'PING',
+  'PONG',
+  'STATUS_UPDATE',
+  'SESSION_READY',
+  'TOKEN_RENEWED',
+  'ERROR',
+  'SESSION_DESTROYED',
+  'FILE_CHANGED',
+  'RECORDING_DATA',
+  'RECORDING_STATUS',
+  'START_RECORDING',
+  'STOP_RECORDING',
+  'GET_RECORDING',
+  'PANE_INFO',
+  'LIST_PANES',
+  'SELECT_PANE',
+  // Multi-device
+  'OBSERVER_MODE',
+  'CONTROL_REQUESTED',
+  'CONTROL_GRANTED',
+  'CONTROL_REVOKED',
+  'DEVICE_LIST',
+  'KICKED',
+  'REQUEST_CONTROL',
+  'GRANT_CONTROL',
+  'DENY_CONTROL',
+  'FORCE_TAKE_CONTROL',
+  'SHARE_SESSION',
+  'UNSHARE_SESSION',
+  'REQUEST_WRITE',
+  'SESSION_SHARED',
+  'SESSION_UNSHARED',
+  'WRITE_REQUESTED',
+  'WRITE_GRANTED',
+  'SHARED_SESSIONS_LIST',
 ])
 
 function isValidControlMsg(data: unknown): data is { type: string; [key: string]: unknown } {
@@ -48,17 +89,34 @@ const PING_INTERVAL = 30_000
 const RESIZE_DEBOUNCE = 200
 const RESIZE_THROTTLE = 1_000
 
+type ConnectionPhase = 'DISCONNECTED' | 'CONNECTING_TERM' | 'CONNECTING_CTRL' | 'CONNECTED'
+
 interface UseDualChannelWS {
-  connect: (sessionId: string, cols: number, rows: number, term: Terminal, attachToTmux?: string, cwd?: string) => void
+  connect: (
+    sessionId: string,
+    cols: number,
+    rows: number,
+    term: Terminal,
+    attachToTmux?: string,
+    cwd?: string,
+  ) => void
   disconnect: () => void
   termWs: WebSocket | null
   ctrlWs: WebSocket | null
   reconnectCount: number
+  isConnected: boolean
+  connectionPhase: ConnectionPhase
   sendInput: (data: string | Uint8Array) => void
   sendResize: (cols: number, rows: number) => void
   sendQuickAction: (payload: string) => void
   sendInjectCode: (code: string) => void
   sendObserveSession: (sessionId: string) => void
+  sendSelectPane: (paneIndex: number) => void
+  sendListPanes: () => void
+  sendRequestControl: () => void
+  sendGrantControl: (requestId: string) => void
+  sendDenyControl: (requestId: string) => void
+  sendForceTakeControl: (sessionId: string) => void
 }
 
 export function useDualChannelWS(
@@ -69,6 +127,15 @@ export function useDualChannelWS(
   // [M4修复] ref 用于内部逻辑，state 用于 UI 显示
   const reconnectCountRef = useRef(0)
   const [reconnectCount, setReconnectCount] = useState(0)
+
+  // Per-instance connection state (each panel has its own WS)
+  const [isConnected, setIsConnected] = useState(false)
+  const [connectionPhase, setConnectionPhase] = useState<ConnectionPhase>('DISCONNECTED')
+
+  // Refs for WS handlers — avoids stale closures in onclose callbacks
+  // that capture the initial render's state values and never see updates.
+  const isConnectedRef = useRef(false)
+  const connectionPhaseRef = useRef<ConnectionPhase>('DISCONNECTED')
 
   const termWsRef = useRef<WebSocket | null>(null)
   const ctrlWsRef = useRef<WebSocket | null>(null)
@@ -85,11 +152,40 @@ export function useDualChannelWS(
 
   const store = useSessionStore
 
+  // Update both local state (per-panel) and global store (for StatusBar backward compat)
+  function updateConnection(phase: ConnectionPhase) {
+    setConnectionPhase(phase)
+    setIsConnected(phase === 'CONNECTED')
+    isConnectedRef.current = phase === 'CONNECTED'
+    connectionPhaseRef.current = phase
+    store.getState().setConnected(phase)
+  }
+
+  function updateDisconnected() {
+    setConnectionPhase('DISCONNECTED')
+    setIsConnected(false)
+    isConnectedRef.current = false
+    connectionPhaseRef.current = 'DISCONNECTED'
+    store.getState().setDisconnected()
+  }
+
   function clearAllTimers() {
-    if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
-    if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
-    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null }
-    if (resizeDebounceRef.current) { clearTimeout(resizeDebounceRef.current); resizeDebounceRef.current = null }
+    if (termPingRef.current) {
+      clearInterval(termPingRef.current)
+      termPingRef.current = null
+    }
+    if (ctrlPingRef.current) {
+      clearInterval(ctrlPingRef.current)
+      ctrlPingRef.current = null
+    }
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+    if (resizeDebounceRef.current) {
+      clearTimeout(resizeDebounceRef.current)
+      resizeDebounceRef.current = null
+    }
   }
 
   function closeSockets() {
@@ -98,7 +194,10 @@ export function useDualChannelWS(
       termWsRef.current.onmessage = null
       termWsRef.current.onclose = null
       termWsRef.current.onerror = null
-      if (termWsRef.current.readyState === WebSocket.OPEN || termWsRef.current.readyState === WebSocket.CONNECTING) {
+      if (
+        termWsRef.current.readyState === WebSocket.OPEN ||
+        termWsRef.current.readyState === WebSocket.CONNECTING
+      ) {
         termWsRef.current.close()
       }
       termWsRef.current = null
@@ -108,7 +207,10 @@ export function useDualChannelWS(
       ctrlWsRef.current.onmessage = null
       ctrlWsRef.current.onclose = null
       ctrlWsRef.current.onerror = null
-      if (ctrlWsRef.current.readyState === WebSocket.OPEN || ctrlWsRef.current.readyState === WebSocket.CONNECTING) {
+      if (
+        ctrlWsRef.current.readyState === WebSocket.OPEN ||
+        ctrlWsRef.current.readyState === WebSocket.CONNECTING
+      ) {
         ctrlWsRef.current.close()
       }
       ctrlWsRef.current = null
@@ -145,18 +247,27 @@ export function useDualChannelWS(
       termWsRef.current.onmessage = null
       termWsRef.current.onclose = null
       termWsRef.current.onerror = null
-      if (termWsRef.current.readyState === WebSocket.OPEN || termWsRef.current.readyState === WebSocket.CONNECTING) {
+      if (
+        termWsRef.current.readyState === WebSocket.OPEN ||
+        termWsRef.current.readyState === WebSocket.CONNECTING
+      ) {
         termWsRef.current.close()
       }
       termWsRef.current = null
     }
-    if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
+    if (termPingRef.current) {
+      clearInterval(termPingRef.current)
+      termPingRef.current = null
+    }
 
     // Reconnect terminal, keep control
     const token = getAccessToken()
-    if (!token) { onAuthFailure(); return }
+    if (!token) {
+      onAuthFailure()
+      return
+    }
 
-    store.getState().setConnected('CONNECTING_TERM')
+    updateConnection('CONNECTING_TERM')
     const termWs = new WebSocket(`${WS_BASE}/ws/terminal?token=${encodeURIComponent(token)}`)
     termWs.binaryType = 'arraybuffer'
     termWsRef.current = termWs
@@ -172,14 +283,23 @@ export function useDualChannelWS(
         }
       }
       startTermPing()
-      store.getState().setConnected('CONNECTED')
+      updateConnection('CONNECTED')
       isConnectingRef.current = false
     }
 
     termWs.onclose = (event) => {
-      if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
-      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
-      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
+      if (termPingRef.current) {
+        clearInterval(termPingRef.current)
+        termPingRef.current = null
+      }
+      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) {
+        window.location.reload()
+        return
+      }
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) {
+        handleAuthFailureAndRetry()
+        return
+      }
       // Unexpected close — try again
       scheduleReconnect()
     }
@@ -195,28 +315,40 @@ export function useDualChannelWS(
       ctrlWsRef.current.onmessage = null
       ctrlWsRef.current.onclose = null
       ctrlWsRef.current.onerror = null
-      if (ctrlWsRef.current.readyState === WebSocket.OPEN || ctrlWsRef.current.readyState === WebSocket.CONNECTING) {
+      if (
+        ctrlWsRef.current.readyState === WebSocket.OPEN ||
+        ctrlWsRef.current.readyState === WebSocket.CONNECTING
+      ) {
         ctrlWsRef.current.close()
       }
       ctrlWsRef.current = null
     }
-    if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
+    if (ctrlPingRef.current) {
+      clearInterval(ctrlPingRef.current)
+      ctrlPingRef.current = null
+    }
 
     const token = getAccessToken()
-    if (!token) { onAuthFailure(); return }
+    if (!token) {
+      onAuthFailure()
+      return
+    }
 
-    store.getState().setConnected('CONNECTING_CTRL')
+    updateConnection('CONNECTING_CTRL')
     const ctrlWs = new WebSocket(`${WS_BASE}/ws/control?token=${encodeURIComponent(token)}`)
     ctrlWsRef.current = ctrlWs
 
     ctrlWs.onopen = () => {
-      // Token already sent via query param — send INIT_SESSION immediately
       const init: ControlClientMessage = {
         type: 'INIT_SESSION',
         sessionId: s.sessionId,
         cols: s.cols,
         rows: s.rows,
-        adapter: useSessionStore.getState().activeAdapter ?? 'claude',
+        adapter:
+          useSessionStore.getState().sessions.find((sess) => sess.id === s.sessionId)
+            ?.adapterName ||
+          useSessionStore.getState().activeAdapter ||
+          'claude',
       }
       ctrlWs.send(JSON.stringify(init))
     }
@@ -230,7 +362,7 @@ export function useDualChannelWS(
           return
         }
         if (msg.type === 'SESSION_READY') {
-          store.getState().setConnected('CONNECTED')
+          updateConnection('CONNECTED')
           isConnectingRef.current = false
           reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
           reconnectCountRef.current = 0
@@ -245,9 +377,18 @@ export function useDualChannelWS(
     }
 
     ctrlWs.onclose = (event) => {
-      if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
-      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
-      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
+      if (ctrlPingRef.current) {
+        clearInterval(ctrlPingRef.current)
+        ctrlPingRef.current = null
+      }
+      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) {
+        window.location.reload()
+        return
+      }
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) {
+        handleAuthFailureAndRetry()
+        return
+      }
       scheduleReconnect()
     }
   }
@@ -279,7 +420,7 @@ export function useDualChannelWS(
 
     switch (data.type) {
       case 'STATUS_UPDATE':
-        store.getState().setAgentStatus(data.status)
+        store.getState().setAgentStatus(data.status, data.options)
         store.getState().updateSessionStatus(data.sessionId, data.status)
         if (data.status === 'WAITING_APPROVAL' && document.hidden) {
           sendNotification('AI CLI', 'An action is waiting for your approval')
@@ -291,6 +432,10 @@ export function useDualChannelWS(
       case 'ERROR':
         console.error('[WS Control] Error:', data.message)
         break
+      case 'SESSION_DESTROYED':
+        disconnect()
+        store.getState().removeSessionById(data.sessionId)
+        break
       case 'PONG':
         break
       case 'AUTH_OK':
@@ -299,14 +444,59 @@ export function useDualChannelWS(
       case 'SESSION_READY':
         // Handled in connection flow — ignore stray
         break
+      case 'FILE_CHANGED':
+        store
+          .getState()
+          .onFileChange?.({
+            path: data.path,
+            oldContent: data.oldContent,
+            newContent: data.newContent,
+          })
+        break
+      case 'PANE_INFO':
+        store.getState().setTmuxPanes(data.panes)
+        break
+      case 'OBSERVER_MODE':
+        store.getState().setObserverMode(data.sessionId, data.isObserver)
+        break
+      case 'CONTROL_REQUESTED':
+        store
+          .getState()
+          .addControlRequest({
+            requestId: data.requestId,
+            deviceName: data.deviceName,
+            username: data.username,
+            sessionId: data.sessionId,
+          })
+        break
+      case 'CONTROL_GRANTED':
+        if (sessionRef.current)
+          store.getState().setObserverMode(sessionRef.current.sessionId, false)
+        break
+      case 'CONTROL_REVOKED':
+        if (sessionRef.current) store.getState().setObserverMode(sessionRef.current.sessionId, true)
+        break
+      case 'DEVICE_LIST':
+        store.getState().setConnectedDevices(data.devices)
+        break
+      case 'KICKED':
+        disconnect()
+        break
     }
   }
 
-  function connectInternal(sessionId: string, cols: number, rows: number, term: Terminal, attachToTmux?: string, cwd?: string) {
+  function connectInternal(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    term: Terminal,
+    attachToTmux?: string,
+    cwd?: string,
+  ) {
     if (isConnectingRef.current) return
     isConnectingRef.current = true
 
-    store.getState().setConnected('CONNECTING_CTRL')
+    updateConnection('CONNECTING_CTRL')
 
     const token = getAccessToken()
     if (!token) {
@@ -331,7 +521,10 @@ export function useDualChannelWS(
         sessionId,
         cols,
         rows,
-        adapter: useSessionStore.getState().activeAdapter ?? 'claude',
+        adapter:
+          useSessionStore.getState().sessions.find((sess) => sess.id === sessionId)?.adapterName ||
+          useSessionStore.getState().activeAdapter ||
+          'claude',
         ...(attachToTmux ? { attachToTmux } : {}),
         ...(cwd ? { cwd } : {}),
       }
@@ -348,6 +541,10 @@ export function useDualChannelWS(
           // Session created — now connect terminal
           connectTerminalAfterSessionReady(token, sessionId, term)
           startCtrlPing()
+          // Check for tmux panes
+          setTimeout(() => {
+            sendListPanes()
+          }, 2000)
           return
         }
         handleCtrlMessage(msg)
@@ -357,15 +554,24 @@ export function useDualChannelWS(
     }
 
     ctrlWs.onclose = (event) => {
-      if (ctrlPingRef.current) { clearInterval(ctrlPingRef.current); ctrlPingRef.current = null }
-      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
-      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
-      if (store.getState().isConnected) {
+      if (ctrlPingRef.current) {
+        clearInterval(ctrlPingRef.current)
+        ctrlPingRef.current = null
+      }
+      if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) {
+        window.location.reload()
+        return
+      }
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) {
+        handleAuthFailureAndRetry()
+        return
+      }
+      if (isConnectedRef.current) {
         reconnectCtrlOnly()
-      } else if (store.getState().connectionPhase === 'CONNECTING_CTRL') {
+      } else if (connectionPhaseRef.current === 'CONNECTING_CTRL') {
         closeSockets()
         clearAllTimers()
-        store.getState().setDisconnected()
+        updateDisconnected()
         isConnectingRef.current = false
         scheduleReconnect()
       }
@@ -375,7 +581,7 @@ export function useDualChannelWS(
 
     // --- Terminal WS (deferred — will connect after SESSION_READY) ---
     function connectTerminalAfterSessionReady(tk: string, sid: string, t: Terminal) {
-      store.getState().setConnected('CONNECTING_TERM')
+      updateConnection('CONNECTING_TERM')
 
       const termWs = new WebSocket(`${WS_BASE}/ws/terminal?token=${encodeURIComponent(tk)}`)
       termWs.binaryType = 'arraybuffer'
@@ -388,14 +594,14 @@ export function useDualChannelWS(
         termWs.onmessage = (ev) => {
           if (ev.data instanceof ArrayBuffer) {
             const buf = new Uint8Array(ev.data)
-            if (buf.length === 1 && buf[0] === 0x01) return
+            if (buf.length === 1 && (buf[0] === TERM_PONG || buf[0] === TERM_SERVER_PING)) return
             t.write(buf)
             offlineCacheRef.current?.cacheScreen(new TextDecoder().decode(buf))
           }
         }
 
         startTermPing()
-        store.getState().setConnected('CONNECTED')
+        updateConnection('CONNECTED')
         isConnectingRef.current = false
         reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
         reconnectCountRef.current = 0
@@ -407,10 +613,19 @@ export function useDualChannelWS(
       }
 
       termWs.onclose = (event) => {
-        if (termPingRef.current) { clearInterval(termPingRef.current); termPingRef.current = null }
-        if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) { window.location.reload(); return }
-        if (event.code === WS_CLOSE_CODE.AUTH_FAILED) { handleAuthFailureAndRetry(); return }
-        if (store.getState().isConnected) {
+        if (termPingRef.current) {
+          clearInterval(termPingRef.current)
+          termPingRef.current = null
+        }
+        if (event.code === WS_CLOSE_CODE.PROTOCOL_MISMATCH) {
+          window.location.reload()
+          return
+        }
+        if (event.code === WS_CLOSE_CODE.AUTH_FAILED) {
+          handleAuthFailureAndRetry()
+          return
+        }
+        if (isConnectedRef.current) {
           reconnectTermOnly()
         } else {
           scheduleReconnect()
@@ -421,12 +636,11 @@ export function useDualChannelWS(
     }
   }
 
-
   async function handleAuthFailureAndRetry() {
     // Pause reconnecting, try to refresh the token first
     closeSockets()
     clearAllTimers()
-    store.getState().setDisconnected()
+    updateDisconnected()
     isConnectingRef.current = false
 
     try {
@@ -447,14 +661,24 @@ export function useDualChannelWS(
     }
   }
 
-  const connect = useCallback((sessionId: string, cols: number, rows: number, term: Terminal, attachToTmux?: string, cwd?: string) => {
-    // Reset reconnect state for a fresh connect
-    reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
-    closeSockets()
-    clearAllTimers()
-    isConnectingRef.current = false
-    connectInternal(sessionId, cols, rows, term, attachToTmux, cwd)
-  }, [])
+  const connect = useCallback(
+    (
+      sessionId: string,
+      cols: number,
+      rows: number,
+      term: Terminal,
+      attachToTmux?: string,
+      cwd?: string,
+    ) => {
+      // Reset reconnect state for a fresh connect
+      reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+      closeSockets()
+      clearAllTimers()
+      isConnectingRef.current = false
+      connectInternal(sessionId, cols, rows, term, attachToTmux, cwd)
+    },
+    [],
+  )
 
   const disconnect = useCallback(() => {
     sessionRef.current = null
@@ -462,7 +686,7 @@ export function useDualChannelWS(
     closeSockets()
     clearAllTimers()
     isConnectingRef.current = false
-    store.getState().setDisconnected()
+    updateDisconnected()
   }, [])
 
   const sendInput = useCallback((data: string | Uint8Array) => {
@@ -514,7 +738,9 @@ export function useDualChannelWS(
     const MAX_INJECT_CODE_SIZE = 100 * 1024 // 100KB
     const byteLength = new TextEncoder().encode(code).length
     if (byteLength > MAX_INJECT_CODE_SIZE) {
-      console.warn(`[安全警告] INJECT_CODE 内容超过 ${MAX_INJECT_CODE_SIZE} 字节限制 (${byteLength} bytes)，已拒绝发送`)
+      console.warn(
+        `[安全警告] INJECT_CODE 内容超过 ${MAX_INJECT_CODE_SIZE} 字节限制 (${byteLength} bytes)，已拒绝发送`,
+      )
       return
     }
 
@@ -534,16 +760,87 @@ export function useDualChannelWS(
     }
   }, [])
 
+  const sendSelectPane = useCallback((paneIndex: number) => {
+    const ws = ctrlWsRef.current
+    const sessionId = sessionRef.current?.sessionId
+    if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+      const msg: ControlClientMessage = { type: 'SELECT_PANE', sessionId, paneIndex }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  const sendListPanes = useCallback(() => {
+    const ws = ctrlWsRef.current
+    const sessionId = sessionRef.current?.sessionId
+    if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+      const msg: ControlClientMessage = { type: 'LIST_PANES', sessionId }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  const sendRequestControl = useCallback(() => {
+    const ws = ctrlWsRef.current
+    const sessionId = sessionRef.current?.sessionId
+    if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+      const msg: ControlClientMessage = { type: 'REQUEST_CONTROL', sessionId }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  const sendGrantControl = useCallback((requestId: string) => {
+    const ws = ctrlWsRef.current
+    const sessionId = sessionRef.current?.sessionId
+    if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+      const msg: ControlClientMessage = { type: 'GRANT_CONTROL', sessionId, requestId }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  const sendDenyControl = useCallback((requestId: string) => {
+    const ws = ctrlWsRef.current
+    const sessionId = sessionRef.current?.sessionId
+    if (ws && ws.readyState === WebSocket.OPEN && sessionId) {
+      const msg: ControlClientMessage = { type: 'DENY_CONTROL', sessionId, requestId }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  const sendForceTakeControl = useCallback((sessionId: string) => {
+    const ws = ctrlWsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      const msg: ControlClientMessage = { type: 'FORCE_TAKE_CONTROL', sessionId }
+      ws.send(JSON.stringify(msg))
+    }
+  }, [])
+
+  // Wire pane functions to store (in useEffect to avoid render-time side effects)
+  useEffect(() => {
+    store.getState().sendSelectPane = sendSelectPane
+    store.getState().sendListPanes = sendListPanes
+  }, [sendSelectPane, sendListPanes])
+
   return {
     connect,
     disconnect,
-    get termWs() { return termWsRef.current },
-    get ctrlWs() { return ctrlWsRef.current },
+    get termWs() {
+      return termWsRef.current
+    },
+    get ctrlWs() {
+      return ctrlWsRef.current
+    },
     reconnectCount,
+    isConnected,
+    connectionPhase,
     sendInput,
     sendResize,
     sendQuickAction,
     sendInjectCode,
     sendObserveSession,
+    sendSelectPane,
+    sendListPanes,
+    sendRequestControl,
+    sendGrantControl,
+    sendDenyControl,
+    sendForceTakeControl,
   }
 }

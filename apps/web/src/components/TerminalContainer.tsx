@@ -1,84 +1,36 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
-import { WebglAddon } from '@xterm/addon-webgl'
-import { CanvasAddon } from '@xterm/addon-canvas'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useDualChannelWS } from '../hooks/useDualChannelWS'
 import { useAuth } from '../hooks/useAuth'
 import { useSessionStore } from '../store/sessionStore'
+import { findNode } from '../lib/splitLayout'
 import { MobileKeyboardAdapter } from '../adapters/MobileKeyboardAdapter'
 import { GestureHandler, MIN_FONT_SIZE, MAX_FONT_SIZE } from '../lib/GestureHandler'
 import { ConnectionOverlay } from './ConnectionOverlay'
 import { OfflineCache } from '../lib/offlineCache'
 import { QuickActionsPanel } from './QuickActionsPanel'
-import { THEME_COLORS } from '../lib/theme'
+import { getTerminalTheme, toXtermTheme } from '../lib/themes'
 import '@xterm/xterm/css/xterm.css'
 
 // Module-level terminal instance cache (ADR-011: never dispose)
 const terminalCache = new Map<string, Terminal>()
 const fitAddonCache = new Map<string, FitAddon>()
 
-const XTERM_THEME_DARK = {
-  background: THEME_COLORS.bg,
-  foreground: THEME_COLORS.foreground,
-  cursor: THEME_COLORS.foreground,
-  cursorAccent: THEME_COLORS.bg,
-  selectionBackground: THEME_COLORS.selection,
-  black: '#15161e',
-  red: '#f7768e',
-  green: '#9ece6a',
-  yellow: '#e0af68',
-  blue: '#7aa2f7',
-  magenta: '#bb9af7',
-  cyan: '#7dcfff',
-  white: '#a9b1d6',
-  brightBlack: '#414868',
-  brightRed: '#f7768e',
-  brightGreen: '#9ece6a',
-  brightYellow: '#e0af68',
-  brightBlue: '#7aa2f7',
-  brightMagenta: '#bb9af7',
-  brightCyan: '#7dcfff',
-  brightWhite: '#c0caf5',
-} as const
-
-const XTERM_THEME_LIGHT = {
-  background: '#fafafa',
-  foreground: '#383a42',
-  cursor: '#526fff',
-  cursorAccent: '#fafafa',
-  selectionBackground: '#bfceff',
-  black: '#383a42',
-  red: '#e45649',
-  green: '#50a14f',
-  yellow: '#c18401',
-  blue: '#4078f2',
-  magenta: '#a626a4',
-  cyan: '#0184bc',
-  white: '#a0a1a7',
-  brightBlack: '#696c77',
-  brightRed: '#e06c75',
-  brightGreen: '#98c379',
-  brightYellow: '#d19a66',
-  brightBlue: '#61afef',
-  brightMagenta: '#c678dd',
-  brightCyan: '#56b6c2',
-  brightWhite: '#ffffff',
-} as const
-
-function getXtermTheme(theme: 'dark' | 'light') {
-  return theme === 'light' ? XTERM_THEME_LIGHT : XTERM_THEME_DARK
+interface TerminalContainerProps {
+  panelId: string
 }
 
-export function TerminalContainer() {
+export function TerminalContainer({ panelId }: TerminalContainerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const keyboardAdapterRef = useRef<MobileKeyboardAdapter | null>(null)
   const gestureHandlerRef = useRef<GestureHandler | null>(null)
-  const rendererTypeRef = useRef<'webgl' | 'canvas'>('webgl')
   const offlineCacheRef = useRef<OfflineCache | null>(null)
+
+  const sendSGRScrollRef = useRef<(direction: 'up' | 'down', lines: number) => void>(() => {})
 
   const { accessToken, refreshToken: refreshTokenFn, logout } = useAuth()
   const {
@@ -88,21 +40,45 @@ export function TerminalContainer() {
     sendResize,
     sendQuickAction,
     sendInjectCode,
+    sendSelectPane,
+    sendListPanes,
+    sendRequestControl,
+    sendGrantControl,
+    sendDenyControl,
+    sendForceTakeControl,
     reconnectCount,
+    isConnected,
+    connectionPhase,
   } = useDualChannelWS(
     useCallback(() => useSessionStore.getState().accessToken, []),
     refreshTokenFn,
     logout,
   )
 
-  const { sessionId, connectionPhase, isConnected, fontSize, setFontSize, theme, activeAdapter } = useSessionStore()
+  const { fontSize, setFontSize, terminalTheme, activeAdapter, tmuxPanes } = useSessionStore()
 
-  // Expose sendInjectCode to store so App.tsx / CodeEditor can use it
+  const sessionId = useSessionStore((s) => s.terminalSessions[panelId] ?? null)
+  const isObserver = useSessionStore((s) => s.observerSessions[sessionId ?? ''] ?? false)
+
   useEffect(() => {
-    useSessionStore.setState({ sendInjectCode })
-  }, [sendInjectCode])
+    if (panelId === 'terminal-main') {
+      useSessionStore.setState({
+        sendInjectCode,
+        sendGrantControl,
+        sendDenyControl,
+        sendRequestControl,
+        sendForceTakeControl,
+      })
+    }
+  }, [
+    sendInjectCode,
+    sendGrantControl,
+    sendDenyControl,
+    sendRequestControl,
+    sendForceTakeControl,
+    panelId,
+  ])
 
-  // Initialize offline cache
   useEffect(() => {
     offlineCacheRef.current = new OfflineCache(sessionId || undefined)
   }, [sessionId])
@@ -115,73 +91,51 @@ export function TerminalContainer() {
     let term: Terminal
     let fitAddon: FitAddon
 
-    // Clean up terminals for other sessions
-    const cacheKey = sessionId || '__default'
-    for (const [key, cachedTerm] of terminalCache.entries()) {
-      if (key !== cacheKey) {
-        cachedTerm.dispose()
-        terminalCache.delete(key)
-        fitAddonCache.delete(key)
-      }
-    }
-
-    // Check if we have a cached terminal for this session
+    const cacheKey = panelId
     const cached = terminalCache.get(cacheKey)
 
     if (cached && !(cached as any).isDisposed) {
       term = cached
       fitAddon = fitAddonCache.get(cacheKey)!
-      if (term.element) {
+      if (term.element && !term.element.parentElement) {
         container.appendChild(term.element)
       }
-      // Defer fit so the DOM can settle after re-attaching the terminal element.
       requestAnimationFrame(() => {
-        try { fitAddon.fit() } catch { /* terminal not fully ready yet */ }
+        try {
+          fitAddon.fit()
+        } catch {
+          /* terminal not fully ready yet */
+        }
       })
     } else {
-      // Remove stale cached entry if disposed
       if (cached) {
         terminalCache.delete(cacheKey)
         fitAddonCache.delete(cacheKey)
       }
       term = new Terminal({
-        theme: getXtermTheme(theme),
+        theme: toXtermTheme(getTerminalTheme(terminalTheme)),
+        fontFamily: "'JetBrains Mono', 'Smiley Sans', Menlo, Consolas, monospace",
         fontSize,
         cursorBlink: true,
-        scrollback: 5000,
+        // 默认 1000，原生滚动条已通过 CSS + wheel 拦截隐藏，无需靠小 buffer
+        scrollback: 1000,
         convertEol: true,
+        scrollSensitivity: 1,
       })
 
       fitAddon = new FitAddon()
-
-      // Load addons in order: WebGL → Canvas fallback (ADR-010)
-      try {
-        const webglAddon = new WebglAddon()
-        webglAddon.onContextLoss(() => {
-          webglAddon.dispose()
-          try { term.loadAddon(new CanvasAddon()) } catch { /* fallback to DOM */ }
-        })
-        term.loadAddon(webglAddon)
-        rendererTypeRef.current = 'webgl'
-      } catch {
-        try {
-          term.loadAddon(new CanvasAddon())
-          rendererTypeRef.current = 'canvas'
-        } catch (e) {
-          console.warn('[Terminal] Both WebGL and Canvas addons failed, using DOM renderer', e)
-        }
-      }
-
       term.loadAddon(fitAddon)
       term.loadAddon(new WebLinksAddon())
-
       term.open(container)
 
-      // Defer initial fit to ensure CSS layout is fully resolved before measuring.
-      // A synchronous fit() right after open() often reads zero-height because
-      // flexbox hasn't computed the container's final dimensions yet.
       requestAnimationFrame(() => {
-        try { fitAddon.fit() } catch { /* may fail in StrictMode double-invoke */ }
+        requestAnimationFrame(() => {
+          try {
+            fitAddon.fit()
+          } catch {
+            /* may fail in StrictMode double-invoke */
+          }
+        })
       })
 
       terminalCache.set(cacheKey, term)
@@ -191,21 +145,40 @@ export function TerminalContainer() {
     termRef.current = term
     fitAddonRef.current = fitAddon
 
-    // MobileKeyboardAdapter
+    // 彻底抹杀 xterm 原生滚动条
+    const styleId = 'xterm-hide-scrollbar-' + panelId
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style')
+      style.id = styleId
+      style.textContent = `
+        [data-panel-id="${panelId}"] .xterm-scrollbar { display: none !important; }
+        [data-panel-id="${panelId}"] .xterm-viewport { 
+          overflow-y: hidden !important; 
+          scrollbar-width: none !important; 
+        }
+        [data-panel-id="${panelId}"] .xterm-viewport::-webkit-scrollbar { 
+          display: none !important; 
+        }
+      `
+      document.head.appendChild(style)
+    }
+    container.dataset.panelId = panelId
+
     const keyboardAdapter = new MobileKeyboardAdapter(
-      (data) => sendInput(data),
+      () => {},
       (keyboardHeight) => {
         if (containerRef.current) {
           containerRef.current.style.paddingBottom = `${keyboardHeight}px`
-          // Re-fit after keyboard appears
           setTimeout(() => fitAddonRef.current?.fit(), 50)
         }
       },
     )
+    if (term.textarea) {
+      keyboardAdapter.setXtermTextarea(term.textarea)
+    }
     keyboardAdapter.attach(container)
     keyboardAdapterRef.current = keyboardAdapter
 
-    // GestureHandler
     const gestureHandler = new GestureHandler(
       container,
       (delta) => {
@@ -225,33 +198,53 @@ export function TerminalContainer() {
     gestureHandler.attach()
     gestureHandlerRef.current = gestureHandler
 
+    // 在最外层 container 上拦截 wheel 事件，确保 100% 截断 xterm 的原生处理
+    const handleWheelCapture = (e: WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+
+      const lines = Math.max(1, Math.min(Math.abs(Math.round(e.deltaY / 40)), 10))
+      sendSGRScrollRef.current(e.deltaY < 0 ? 'up' : 'down', lines)
+    }
+
+    container.addEventListener('wheel', handleWheelCapture, { passive: false, capture: true })
+
     return () => {
+      const style = document.getElementById('xterm-hide-scrollbar-' + panelId)
+      if (style) style.remove()
       keyboardAdapter.destroy()
       gestureHandler.destroy()
-      // ADR-011: removeChild, never dispose
+      container.removeEventListener('wheel', handleWheelCapture, { capture: true } as any)
       if (term.element && term.element.parentNode) {
         term.element.parentNode.removeChild(term.element)
       }
     }
-  }, []) // Intentionally empty — terminal instance lives across renders
+  }, [])
 
-  // Sync fontSize changes from store to terminal
   useEffect(() => {
-    if (termRef.current) {
-      termRef.current.options.fontSize = fontSize
-      fitAddonRef.current?.fit()
+    const t = termRef.current
+    if (t && !(t as any).isDisposed) {
+      t.options.fontSize = fontSize
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        /* may fail */
+      }
     }
   }, [fontSize])
 
-  // Sync theme changes from store to terminal
   useEffect(() => {
-    if (termRef.current) {
-      termRef.current.options.theme = getXtermTheme(theme)
-      fitAddonRef.current?.fit()
+    const t = termRef.current
+    if (t && !(t as any).isDisposed) {
+      t.options.theme = toXtermTheme(getTerminalTheme(terminalTheme))
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        /* may fail */
+      }
     }
-  }, [theme])
+  }, [terminalTheme])
 
-  // Terminal data → WS input
   useEffect(() => {
     if (!termRef.current) return
     const disposable = termRef.current.onData((data) => {
@@ -260,16 +253,20 @@ export function TerminalContainer() {
     return () => disposable.dispose()
   }, [sendInput])
 
-  // Terminal resize → WS resize (debounce is in useDualChannelWS, ADR-018)
   useEffect(() => {
     if (!termRef.current) return
     const disposable = termRef.current.onResize(({ cols, rows }) => {
       sendResize(cols, rows)
+
+      if (virtualScrollRef.current > 0) {
+        setTimeout(() => {
+          sendSGRScrollRef.current('up', 1)
+        }, 50)
+      }
     })
     return () => disposable.dispose()
   }, [sendResize])
 
-  // Window resize → fit
   useEffect(() => {
     function handleResize() {
       fitAddonRef.current?.fit()
@@ -278,12 +275,27 @@ export function TerminalContainer() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  const accessTokenRef = useRef(accessToken)
-  useEffect(() => { accessTokenRef.current = accessToken }, [accessToken])
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const observer = new ResizeObserver(() => {
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        /* may fail */
+      }
+    })
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [])
 
-  // Handle adapter switching and session tab switching
-  const prevAdapterRef = useRef(activeAdapter)
-  const prevSessionIdRef = useRef(sessionId)
+  const accessTokenRef = useRef(accessToken)
+  useEffect(() => {
+    accessTokenRef.current = accessToken
+  }, [accessToken])
+
+  const prevAdapterRef = useRef<string | null>(null)
+  const prevSessionIdRef = useRef<string | null | undefined>(undefined)
   const adapterSwitchIdRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -292,108 +304,315 @@ export function TerminalContainer() {
     prevAdapterRef.current = activeAdapter
     prevSessionIdRef.current = sessionId
 
-    // Skip first render and no-op re-renders
     if (!sessionChanged && !adapterChanged) return
 
-    // Skip session change triggered by adapter switch (already handled below)
-    if (adapterSwitchIdRef.current === sessionId) {
-      adapterSwitchIdRef.current = null
-      return
-    }
-
-    // Clear terminal content (screen capture will repopulate)
     if (termRef.current) {
       termRef.current.clear()
     }
 
-    // Disconnect current session
+    if (adapterChanged && panelId === 'terminal-main') {
+      const newSessionId = crypto.randomUUID()
+      adapterSwitchIdRef.current = newSessionId
+      useSessionStore
+        .getState()
+        .setSession(newSessionId, undefined, undefined, undefined, activeAdapter)
+      return
+    }
+
+    if (adapterSwitchIdRef.current === sessionId) {
+      adapterSwitchIdRef.current = null
+    }
+
     if (isConnected || connectionPhase !== 'DISCONNECTED') {
       disconnect()
     }
+  }, [activeAdapter, sessionId, isConnected, connectionPhase, disconnect, panelId])
 
-    // Adapter change requires a new session with a different startCommand
-    if (adapterChanged) {
-      const newSessionId = crypto.randomUUID()
-      adapterSwitchIdRef.current = newSessionId
-      useSessionStore.getState().setSession(newSessionId)
-    }
-    // Session tab switch: sessionId is already set by switchSession(),
-    // the connect effect will handle reconnection
-  }, [activeAdapter, sessionId, isConnected, connectionPhase, disconnect])
-
-  // Connect on mount when authenticated with session
   useEffect(() => {
-    if (!termRef.current || !accessTokenRef.current || !sessionId) return
-    if (!isConnected && connectionPhase === 'DISCONNECTED') {
-      const { cols, rows } = termRef.current
-      const currentSession = useSessionStore.getState().sessions.find(s => s.id === sessionId)
-      connect(sessionId, cols, rows, termRef.current, currentSession?.attachToTmux, currentSession?.cwd)
-    }
-    // [M5修复] 用 ref 追踪 accessToken，避免 token 刷新导致频繁重连
-  }, [sessionId, isConnected, connectionPhase, connect])
+    if (!accessToken || !sessionId || isConnected) return
+    const term = termRef.current
+    if (!term) return
 
-  // Re-fit terminal once the WS connection is established so the
-  // terminal dimensions match the actual rendered container.
+    try {
+      fitAddonRef.current?.fit()
+    } catch {
+      /* may fail */
+    }
+
+    const { cols, rows } = term
+    if (cols >= 2 && rows >= 2) {
+      const currentSession = useSessionStore.getState().sessions.find((s) => s.id === sessionId)
+      connect(sessionId, cols, rows, term, currentSession?.attachToTmux, currentSession?.cwd)
+      return
+    }
+
+    let cancelled = false
+    const raf = requestAnimationFrame(() => {
+      if (cancelled) return
+      try {
+        fitAddonRef.current?.fit()
+      } catch {
+        /* may fail */
+      }
+      const t = termRef.current
+      if (!t || t.cols < 2 || t.rows < 2) {
+        const raf2 = requestAnimationFrame(() => {
+          if (cancelled) return
+          try {
+            fitAddonRef.current?.fit()
+          } catch {
+            /* may fail */
+          }
+          const t2 = termRef.current
+          if (!t2 || t2.cols < 2 || t2.rows < 2) return
+          const cs = useSessionStore.getState().sessions.find((s) => s.id === sessionId)
+          connect(sessionId, t2.cols, t2.rows, t2, cs?.attachToTmux, cs?.cwd)
+        })
+        return
+      }
+      const currentSession = useSessionStore.getState().sessions.find((s) => s.id === sessionId)
+      connect(sessionId, t.cols, t.rows, t, currentSession?.attachToTmux, currentSession?.cwd)
+    })
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf)
+    }
+  }, [accessToken, sessionId, isConnected, connect])
+
   useEffect(() => {
     if (isConnected) {
       requestAnimationFrame(() => {
-        fitAddonRef.current?.fit()
+        try {
+          fitAddonRef.current?.fit()
+        } catch {
+          /* may fail */
+        }
       })
     }
   }, [isConnected])
 
-  // visibilitychange: DOM detach/reattach (ADR-011)
+  useEffect(() => {
+    if (!isConnected) return
+    const interval = setInterval(() => {
+      sendListPanes()
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [isConnected, sendListPanes])
+
   useEffect(() => {
     function handleVisibilityChange() {
       const term = termRef.current
       if (!term || !term.element) return
 
       if (document.hidden) {
-        // Remove from DOM but keep instance alive
         if (term.element.parentNode) {
           term.element.parentNode.removeChild(term.element)
         }
       } else {
-        // Re-attach and fit
         if (containerRef.current && !term.element.parentNode) {
+          const prevCols = term.cols
+          const prevRows = term.rows
           containerRef.current.appendChild(term.element)
-          fitAddonRef.current?.fit()
+          requestAnimationFrame(() => {
+            try {
+              fitAddonRef.current?.fit()
+              if (term.cols !== prevCols || term.rows !== prevRows) {
+                sendResize(term.cols, term.rows)
+              }
+            } catch {
+              /* may fail */
+            }
+          })
         }
       }
     }
 
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [])
+  }, [sendResize])
 
-  // Cleanup on unmount — disconnect WS and clean cache
   const unmountedRef = useRef(false)
   useEffect(() => {
     unmountedRef.current = false
     return () => {
-      // In StrictMode, this runs during the cleanup cycle but the component
-      // re-mounts immediately after — only truly dispose on final unmount
       unmountedRef.current = true
       requestAnimationFrame(() => {
         if (!unmountedRef.current) return
         disconnect()
-        for (const [key, cachedTerm] of terminalCache.entries()) {
-          cachedTerm.dispose()
-          terminalCache.delete(key)
-          fitAddonCache.delete(key)
+        const { splitRoot } = useSessionStore.getState()
+        const panelStillExists = findNode(splitRoot, panelId)
+        if (!panelStillExists) {
+          const cached = terminalCache.get(panelId)
+          if (cached && !(cached as any).isDisposed) {
+            try {
+              cached.dispose()
+            } catch {
+              /* may fail */
+            }
+            terminalCache.delete(panelId)
+            fitAddonCache.delete(panelId)
+          }
         }
       })
     }
-  }, [disconnect])
+  }, [disconnect, panelId])
+
+  // --- Custom scrollbar: self-managed virtual scroll for tmux ---
+  const THUMB_HEIGHT_PCT = 20
+  const thumbRef = useRef<HTMLDivElement>(null)
+  const trackRef = useRef<HTMLDivElement>(null)
+  const virtualScrollRef = useRef(0)
+  const MAX_VIRTUAL_SCROLL = 500
+  const [, forceUpdate] = useState(0)
+  const rafIdRef = useRef(0)
+
+  const updateThumbFromVirtual = useCallback(() => {
+    cancelAnimationFrame(rafIdRef.current)
+    rafIdRef.current = requestAnimationFrame(() => forceUpdate((n) => n + 1))
+  }, [])
+
+  const sendSGRScroll = useCallback(
+    (direction: 'up' | 'down', lines: number) => {
+      const term = termRef.current
+      if (!term || lines <= 0) return
+
+      const col = Math.ceil(term.cols / 2)
+      const row = Math.ceil(term.rows / 2)
+
+      // 当已经到底部，且继续向下滚时，发送 ESC 强制退出 copy mode
+      if (direction === 'down' && virtualScrollRef.current === 0) {
+        sendInput('\x1b')
+        return
+      }
+
+      const seq = direction === 'up' ? `\x1b[<64;${col};${row}M` : `\x1b[<65;${col};${row}M`
+      for (let i = 0; i < lines; i++) sendInput(seq)
+
+      if (direction === 'up') {
+        virtualScrollRef.current = Math.min(MAX_VIRTUAL_SCROLL, virtualScrollRef.current + lines)
+      } else {
+        virtualScrollRef.current = Math.max(0, virtualScrollRef.current - lines)
+      }
+      updateThumbFromVirtual()
+    },
+    [sendInput, updateThumbFromVirtual],
+  )
+
+  useEffect(() => {
+    sendSGRScrollRef.current = sendSGRScroll
+  }, [sendSGRScroll])
+
+  const handleScrollPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const thumb = thumbRef.current
+      if (!thumb) return
+      thumb.setPointerCapture(e.pointerId)
+      let lastY = e.clientY
+
+      const onMove = (ev: PointerEvent) => {
+        const deltaY = ev.clientY - lastY
+        lastY = ev.clientY
+
+        const trackH = trackRef.current?.clientHeight || 1
+        const linesFromDelta = Math.abs(deltaY) / (trackH / MAX_VIRTUAL_SCROLL)
+
+        if (deltaY < 0 && linesFromDelta >= 0.5) {
+          const lines = Math.max(1, Math.min(Math.round(linesFromDelta), 10))
+          sendSGRScroll('up', lines)
+        } else if (deltaY > 0 && linesFromDelta >= 0.5) {
+          const lines = Math.max(1, Math.min(Math.round(linesFromDelta), 10))
+          sendSGRScroll('down', lines)
+        }
+      }
+
+      const onUp = () => {
+        thumb.removeEventListener('pointermove', onMove)
+        thumb.removeEventListener('pointerup', onUp)
+        thumb.removeEventListener('pointercancel', onUp)
+      }
+      thumb.addEventListener('pointermove', onMove)
+      thumb.addEventListener('pointerup', onUp)
+      thumb.addEventListener('pointercancel', onUp)
+    },
+    [sendSGRScroll],
+  )
+
+  const handleTrackWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const lines = Math.max(1, Math.min(Math.abs(Math.round(e.deltaY / 40)), 10))
+      sendSGRScroll(e.deltaY < 0 ? 'up' : 'down', lines)
+    },
+    [sendSGRScroll],
+  )
+
+  const thumbTop =
+    virtualScrollRef.current === 0
+      ? 100 - THUMB_HEIGHT_PCT
+      : (100 - THUMB_HEIGHT_PCT) * (1 - virtualScrollRef.current / MAX_VIRTUAL_SCROLL)
 
   return (
-    <div className="w-full h-full relative">
-      <div
-        ref={containerRef}
-        className="w-full h-full overflow-hidden"
-        style={{ backgroundColor: getXtermTheme(theme).background }}
+    <div className="absolute inset-0 flex flex-col">
+      {tmuxPanes.length > 1 && (
+        <div className="flex items-center gap-0.5 px-1 py-1 bg-[#1a1b26] border-b border-[#292e42] overflow-x-auto shrink-0 scrollbar-hide">
+          {tmuxPanes.map((p) => (
+            <button
+              key={p.index}
+              onClick={() => sendSelectPane(p.index)}
+              className={`px-2 py-0.5 rounded text-[10px] whitespace-nowrap transition-colors ${
+                p.active
+                  ? 'bg-blue-600 text-white'
+                  : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+              }`}
+            >
+              {p.title || `Pane ${p.index + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+      {isObserver && (
+        <div className="flex items-center justify-between px-3 py-1.5 bg-amber-600/20 border-b border-amber-600/30 text-amber-300 text-xs shrink-0">
+          <span>Read-only mode — another device is controlling this terminal</span>
+          <button
+            onClick={() => useSessionStore.getState().sendRequestControl?.()}
+            className="px-2 py-0.5 rounded bg-amber-600/40 hover:bg-amber-600/60 text-amber-200 text-xs transition-colors"
+          >
+            Request Control
+          </button>
+        </div>
+      )}
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={containerRef}
+          className="absolute inset-0 overflow-hidden"
+          style={{ backgroundColor: getTerminalTheme(terminalTheme).background }}
+        />
+        <div
+          ref={trackRef}
+          className="absolute right-0 top-0 bottom-0 w-2.5 group"
+          onWheel={handleTrackWheel}
+          style={{ touchAction: 'none', zIndex: 10 }}
+        >
+          <div className="absolute inset-0 rounded-l bg-white/0 group-hover:bg-white/5 transition-colors duration-300" />
+          <div
+            ref={thumbRef}
+            className="absolute left-0.5 right-0.5 rounded-sm bg-white/0 group-hover:bg-white/30 active:bg-white/50 transition-colors duration-200"
+            style={{
+              height: `${THUMB_HEIGHT_PCT}%`,
+              bottom: `${100 - thumbTop - THUMB_HEIGHT_PCT}%`,
+            }}
+            onPointerDown={handleScrollPointerDown}
+          />
+        </div>
+      </div>
+      <ConnectionOverlay
+        phase={connectionPhase}
+        reconnectCount={reconnectCount}
+        cachedScreen={offlineCacheRef.current?.getCachedScreen()}
       />
-      <ConnectionOverlay phase={connectionPhase} reconnectCount={reconnectCount} cachedScreen={offlineCacheRef.current?.getCachedScreen()} />
       <QuickActionsPanel onAction={sendQuickAction} />
     </div>
   )

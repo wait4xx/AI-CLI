@@ -7,6 +7,7 @@ import type { WebSocket } from 'ws'
 import jwt from 'jsonwebtoken'
 import type { JwtPayload } from '@ai-cli/shared'
 import { getConfig } from './config.js'
+import { getTokenVersion } from '../plugins/auth.js'
 import { pinoLogger } from './logger.js'
 
 /**
@@ -30,7 +31,14 @@ export function verifyWsUpgradeToken(
   }
 
   try {
-    return jwt.verify(token, secret) as JwtPayload
+    const decoded = jwt.verify(token, secret) as JwtPayload
+    const currentVersion = getTokenVersion(decoded.username)
+    if (currentVersion !== -1 && decoded.tokenVersion !== currentVersion) {
+      pinoLogger.warn(`${channelName} WS upgrade rejected — token revoked`)
+      ws.close(4001, 'Token revoked')
+      return null
+    }
+    return decoded
   } catch {
     pinoLogger.warn(`${channelName} WS upgrade rejected — invalid token`)
     ws.close(4001, 'Invalid token')

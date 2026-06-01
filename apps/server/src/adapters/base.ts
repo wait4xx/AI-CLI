@@ -8,7 +8,12 @@ export interface CLIAdapter {
   parseStreamData(data: string): StateCandidate | null
 
   /** 解析 capture-pane 屏幕快照（信号2：按需确认） */
-  parseScreenSnapshot(screen: string): AgentStatus | null
+  parseScreenSnapshot(
+    screen: string,
+  ):
+    | AgentStatus
+    | null
+    | { status: AgentStatus | null; options?: Array<{ label: string; payload: string }> }
 
   /** 获取快捷操作映射（如 Approve/Deny 对应的按键） */
   getQuickActions(): QuickAction[]

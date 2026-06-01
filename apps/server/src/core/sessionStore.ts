@@ -8,13 +8,13 @@ export interface PersistedSession {
   adapterName: string
   tmuxSessionName: string
   status: string
-  ownerId: string   // [C1修复] 持久化会话归属用户ID
+  ownerId: string // [C1修复] 持久化会话归属用户ID
   createdAt: string
   lastActive: string
 }
 
 function getSessionsFilePath(): string {
-  return path.join(getConfig().PROJECT_ROOT, '.sessions.json')
+  return path.join(getConfig().DATA_DIR, 'sessions.json')
 }
 
 export class SessionStore {
@@ -23,22 +23,22 @@ export class SessionStore {
   private saveTimer: ReturnType<typeof setTimeout> | null = null
   private static SAVE_DEBOUNCE_MS = 500 // Debounce saves to reduce disk I/O
 
-  load(): void {
+  // [M-#5修复] 改为异步 load，使用 fs.promises.readFile 避免阻塞事件循环
+  async load(): Promise<void> {
     try {
       const sessionsFilePath = getSessionsFilePath()
-      if (fs.existsSync(sessionsFilePath)) {
-        const raw = fs.readFileSync(sessionsFilePath, 'utf-8')
-        const parsed: Record<string, PersistedSession> = JSON.parse(raw)
-        for (const [key, value] of Object.entries(parsed)) {
-          this.data.set(key, value)
-        }
+      const { promises: fsp } = fs
+      const raw = await fsp.readFile(sessionsFilePath, 'utf-8')
+      const parsed: Record<string, PersistedSession> = JSON.parse(raw)
+      for (const [key, value] of Object.entries(parsed)) {
+        this.data.set(key, value)
       }
     } catch {
       // File doesn't exist or is invalid — start fresh
     }
   }
 
-  private writeToFile(): void {
+  private async writeToFile(): Promise<void> {
     try {
       const sessionsFilePath = getSessionsFilePath()
       const dir = path.dirname(sessionsFilePath)
@@ -51,8 +51,9 @@ export class SessionStore {
       }
       // [S5修复] write-then-rename 原子写入，防止写入中途崩溃导致数据损坏
       const tmpPath = sessionsFilePath + '.tmp'
-      fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf-8')
-      fs.renameSync(tmpPath, sessionsFilePath)
+      const { promises: fsp } = fs
+      await fsp.writeFile(tmpPath, JSON.stringify(obj, null, 2), 'utf-8')
+      await fsp.rename(tmpPath, sessionsFilePath)
       this.dirty = false
     } catch (err) {
       pinoLogger.error({ err }, 'Failed to persist session store')
@@ -68,7 +69,7 @@ export class SessionStore {
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null
       if (this.dirty) {
-        this.writeToFile()
+        void this.writeToFile()
       }
     }, SessionStore.SAVE_DEBOUNCE_MS)
   }
@@ -76,13 +77,13 @@ export class SessionStore {
   /**
    * Force immediate save (e.g., on shutdown).
    */
-  flush(): void {
+  async flush(): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer)
       this.saveTimer = null
     }
     if (this.dirty) {
-      this.writeToFile()
+      await this.writeToFile()
     }
   }
 

@@ -6,7 +6,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - "${PORT:-3000}:3000"
+      - '${PORT:-18333}:3000'
     environment:
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET}
@@ -30,32 +30,40 @@ services:
       - SETGID
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:18333/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
 
   # Development mode override
+  # ⚠️ WARNING: app-dev 仅用于本地开发，严禁暴露到公网
+  # 默认密钥故意使用弱值，部署前必须修改
   app-dev:
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: deps
     ports:
-      - "${PORT:-3000}:3000"
-    # [W15修复] ⚠️ 以下凭证仅用于开发环境，严禁用于生产部署！
+      - '${PORT:-18333}:3000'
+    # ⚠️ 以下使用 .env 文件中的变量，严禁硬编码实际密钥！
     environment:
       - PORT=3000
-      - JWT_SECRET=dev-secret-min-32-characters-long-here
-      - JWT_REFRESH_SECRET=dev-refresh-secret-min-32-characters-long
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me-min-32-chars!!}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-dev-refresh-change-me-min-32-chars!!}
       - PROJECT_ROOT=/workspace
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=admin123456
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-changeme}
     volumes:
       - ..:/app
       - workspace-data:/workspace
       - /app/node_modules
-    command: ["pnpm", "dev"]
+    command: ['pnpm', 'dev']
 
 volumes:
   workspace-data:

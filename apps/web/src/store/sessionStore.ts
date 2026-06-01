@@ -1,12 +1,36 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 import { AgentStatus } from '@ai-cli/shared'
+import {
+  type SplitNode,
+  type SplitDirection,
+  type PanelFileState,
+  type FileEntry,
+  type SplitPanel,
+  createDefaultLayout,
+  splitNode as splitTree,
+  removeNode as removeTreeNode,
+  updateRatios as updateTreeRatios,
+  movePanel as moveTreePanel,
+  collectPanels,
+  genId,
+  isContainer,
+  findParentWithIndex,
+} from '../lib/splitLayout'
 
 interface SessionEntry {
   id: string
   status: AgentStatus
   label: string
-  attachToTmux?: string  // if set, this session connects to an existing tmux session
-  cwd?: string            // working directory for new sessions
+  adapterName: string // per-session adapter (claude/shell/aider)
+  attachToTmux?: string // if set, this session connects to an existing tmux session
+  cwd?: string // working directory for new sessions
+}
+
+interface CurrentUser {
+  userId: string
+  username: string
+  role: 'admin' | 'user'
 }
 
 interface SessionState {
@@ -14,7 +38,7 @@ interface SessionState {
   isConnected: boolean
   connectionPhase: 'DISCONNECTED' | 'CONNECTING_TERM' | 'CONNECTING_CTRL' | 'CONNECTED'
 
-  // Current session
+  // Current session (global ref, kept for compatibility)
   sessionId: string | null
   agentStatus: AgentStatus
 
@@ -25,26 +49,156 @@ interface SessionState {
   // Auth
   accessToken: string | null
   refreshToken: string | null
+  currentUser: CurrentUser | null
 
   // Terminal settings
   fontSize: number
-  theme: 'dark' | 'light'
+  editorFontSize: number
+  uiTheme: 'dark' | 'light'
+  editorTheme: string
+  terminalTheme: string
   activeAdapter: string
+
+  // Editor UI state
+  sidebarOpen: boolean
+  sidebarWidth: number
+
+  // Diff view
+  diffEnabled: boolean
+
+  // Approval options from CLI
+  approvalOptions: Array<{ label: string; payload: string }> | null
+
+  // Tmux panes
+  tmuxPanes: Array<{ index: number; title: string; active: boolean; command: string }>
+
+  // Split pane layout
+  splitRoot: SplitNode
+  panelFiles: Record<string, PanelFileState> // keyed by panel id
+  dragState: {
+    type: 'session' | 'panel' | 'file'
+    sessionId?: string
+    panelId?: string
+    filePath?: string
+  } | null
+
+  // Per-panel terminal assignment (panelId → sessionId)
+  // Each panel shows the terminal session assigned here.
+  // Tab clicks assign sessions to the active panel.
+  terminalSessions: Record<string, string>
+
+  // Currently focused panel (for tab click targeting)
+  activePanelId: string
 
   // WS function refs (set by TerminalContainer)
   sendInjectCode: ((code: string) => void) | null
+  onFileChange: ((event: { path: string; oldContent: string; newContent: string }) => void) | null
+  sendSelectPane: ((paneIndex: number) => void) | null
+  sendListPanes: (() => void) | null
+  sendGrantControl: ((requestId: string) => void) | null
+  sendDenyControl: ((requestId: string) => void) | null
+  sendRequestControl: (() => void) | null
+  sendForceTakeControl: ((sessionId: string) => void) | null
+
+  // Multi-device state
+  observerSessions: Record<string, boolean>
+  connectedDevices: Array<{
+    id: string
+    deviceName: string
+    username: string
+    role: string
+    connectedAt: number
+  }>
+  controlRequests: Array<{
+    requestId: string
+    deviceName: string
+    username: string
+    sessionId: string
+  }>
 
   // Actions
   setConnected: (phase: SessionState['connectionPhase']) => void
   setDisconnected: () => void
-  setSession: (sessionId: string, label?: string, attachToTmux?: string, cwd?: string) => void
-  setAgentStatus: (status: AgentStatus) => void
+  setSession: (
+    sessionId: string,
+    label?: string,
+    attachToTmux?: string,
+    cwd?: string,
+    adapterName?: string,
+  ) => void
+  setAgentStatus: (status: AgentStatus, options?: Array<{ label: string; payload: string }>) => void
   setTokens: (accessToken: string, refreshToken: string) => void
+  setCurrentUser: (user: CurrentUser | null) => void
   setFontSize: (size: number) => void
-  setTheme: (theme: 'dark' | 'light') => void
+  setEditorFontSize: (size: number) => void
+  setSidebarOpen: (open: boolean) => void
+  setSidebarWidth: (width: number) => void
+  zoomAll: (delta: number) => void
+  setUiTheme: (theme: 'dark' | 'light') => void
+  setEditorTheme: (id: string) => void
+  setTerminalTheme: (id: string) => void
   setActiveAdapter: (adapter: string) => void
+  toggleDiff: () => void
+  setTmuxPanes: (
+    panes: Array<{ index: number; title: string; active: boolean; command: string }>,
+  ) => void
+  setActivePanelId: (id: string) => void
+  setObserverMode: (sessionId: string, isObserver: boolean) => void
+  setConnectedDevices: (
+    devices: Array<{
+      id: string
+      deviceName: string
+      username: string
+      role: string
+      connectedAt: number
+    }>,
+  ) => void
+  addControlRequest: (request: {
+    requestId: string
+    deviceName: string
+    username: string
+    sessionId: string
+  }) => void
+  removeControlRequest: (requestId: string) => void
+
+  // Split pane actions
+  splitPanel: (
+    targetId: string,
+    direction: SplitDirection,
+    newType: 'editor' | 'terminal',
+    insertBefore?: boolean,
+  ) => void
+  removePanel: (panelId: string) => void
+  updateSplitRatios: (containerId: string, newRatios: number[]) => void
+  movePanelDrop: (
+    sourceId: string,
+    targetId: string,
+    direction: SplitDirection,
+    insertBefore?: boolean,
+  ) => void
+  addFileToPanel: (panelId: string, file: FileEntry) => void
+  replaceActiveFileInPanel: (panelId: string, file: FileEntry) => void
+  removeFileFromPanel: (panelId: string, filePath: string) => void
+  setActiveFile: (panelId: string, filePath: string | null) => void
+  getOrCreateEditorPanel: () => string // returns panel id, creates editor panel if needed
+  openFileInNewSplit: (file: FileEntry, direction?: SplitDirection) => string // creates new split editor with file
+  setDragState: (state: SessionState['dragState']) => void
+  splitPanelWithSession: (
+    targetId: string,
+    direction: SplitDirection,
+    sessionId: string,
+    insertBefore: boolean,
+  ) => void
+  splitPanelWithFile: (
+    sourcePanelId: string,
+    targetId: string,
+    direction: SplitDirection,
+    filePath: string,
+    insertBefore: boolean,
+  ) => void
   addSession: () => void
   removeSession: (index: number) => void
+  removeSessionById: (sessionId: string) => void
   updateSessionStatus: (sessionId: string, status: AgentStatus) => void
   switchSession: (index: number) => void
   loadSessions: (sessions: SessionEntry[]) => void
@@ -60,124 +214,539 @@ const initialState = {
   activeSessionIndex: 0,
   accessToken: null as string | null,
   refreshToken: null as string | null,
+  currentUser: null as CurrentUser | null,
   fontSize: 14,
-  theme: 'dark' as const,
+  editorFontSize: 14,
+  uiTheme: 'dark' as const,
+  editorTheme: 'tokyo-night',
+  terminalTheme: 'tokyo-night',
   activeAdapter: 'shell',
+  sidebarOpen: true,
+  sidebarWidth: 200,
+  diffEnabled: false,
+  approvalOptions: null as Array<{ label: string; payload: string }> | null,
   sendInjectCode: null as ((code: string) => void) | null,
+  onFileChange: null as
+    | ((event: { path: string; oldContent: string; newContent: string }) => void)
+    | null,
+  sendSelectPane: null as ((paneIndex: number) => void) | null,
+  sendListPanes: null as (() => void) | null,
+  sendGrantControl: null as ((requestId: string) => void) | null,
+  sendDenyControl: null as ((requestId: string) => void) | null,
+  sendRequestControl: null as (() => void) | null,
+  sendForceTakeControl: null as ((sessionId: string) => void) | null,
+  tmuxPanes: [] as Array<{ index: number; title: string; active: boolean; command: string }>,
+  splitRoot: createDefaultLayout() as SplitNode,
+  panelFiles: {} as Record<string, PanelFileState>,
+  dragState: null as SessionState['dragState'],
+  terminalSessions: {} as Record<string, string>,
+  activePanelId: 'terminal-main' as string,
+  observerSessions: {},
+  connectedDevices: [],
+  controlRequests: [],
 }
 
-export const useSessionStore = create<SessionState>((set, get) => ({
-  ...initialState,
+export const useSessionStore = create<SessionState>()(
+  persist(
+    (set, get) => ({
+      ...initialState,
 
-  setConnected: (phase) =>
-    set({
-      isConnected: phase === 'CONNECTED',
-      connectionPhase: phase,
+      setConnected: (phase) =>
+        set({
+          isConnected: phase === 'CONNECTED',
+          connectionPhase: phase,
+        }),
+
+      setDisconnected: () =>
+        set({
+          isConnected: false,
+          connectionPhase: 'DISCONNECTED',
+        }),
+
+      setSession: (sessionId, label?, attachToTmux?, cwd?, adapterName?) => {
+        const { sessions, terminalSessions, activeAdapter } = get()
+        const existing = sessions.find((s) => s.id === sessionId)
+        if (!existing) {
+          const ts = { ...terminalSessions }
+          if (!ts['terminal-main']) ts['terminal-main'] = sessionId
+          set({
+            sessionId,
+            sessions: [
+              ...sessions,
+              {
+                id: sessionId,
+                status: 'IDLE',
+                label: label || sessionId.slice(0, 8),
+                adapterName: adapterName || activeAdapter,
+                attachToTmux,
+                cwd,
+              },
+            ],
+            activeSessionIndex: sessions.length,
+            terminalSessions: ts,
+          })
+        } else {
+          set({ sessionId })
+        }
+      },
+
+      setAgentStatus: (status, options?) => {
+        const { sessionId, sessions } = get()
+        set({
+          agentStatus: status,
+          approvalOptions: status === 'WAITING_APPROVAL' ? (options ?? null) : null,
+          sessions: sessions.map((s) => (s.id === sessionId ? { ...s, status } : s)),
+        })
+      },
+
+      setTokens: (accessToken, refreshToken) => set({ accessToken, refreshToken }),
+
+      setCurrentUser: (currentUser) => set({ currentUser }),
+
+      setFontSize: (size) => set({ fontSize: size }),
+
+      setEditorFontSize: (size) => set({ editorFontSize: size }),
+
+      setSidebarOpen: (open) => set({ sidebarOpen: open }),
+      setSidebarWidth: (width) => set({ sidebarWidth: width }),
+
+      zoomAll: (delta) =>
+        set((s) => {
+          const next = Math.max(10, Math.min(32, s.fontSize + delta))
+          return {
+            fontSize: next,
+            editorFontSize: Math.max(10, Math.min(32, s.editorFontSize + delta)),
+          }
+        }),
+
+      setUiTheme: (uiTheme) => set({ uiTheme }),
+
+      setEditorTheme: (editorTheme) => set({ editorTheme }),
+
+      setTerminalTheme: (terminalTheme) => set({ terminalTheme }),
+
+      setActiveAdapter: (adapter) => {
+        const VALID_ADAPTERS = new Set(['claude', 'aider', 'shell'])
+        const safe = VALID_ADAPTERS.has(adapter) ? adapter : 'claude'
+        set({ activeAdapter: safe })
+      },
+
+      toggleDiff: () => set((s) => ({ diffEnabled: !s.diffEnabled })),
+
+      setTmuxPanes: (panes) => set({ tmuxPanes: panes }),
+
+      setActivePanelId: (id) => {
+        const { terminalSessions, sessions } = get()
+        const sid = terminalSessions[id]
+        if (sid) {
+          const idx = sessions.findIndex((s) => s.id === sid)
+          set({
+            activePanelId: id,
+            sessionId: sid,
+            activeSessionIndex: idx >= 0 ? idx : 0,
+            agentStatus: sessions[idx >= 0 ? idx : 0]?.status ?? 'IDLE',
+          })
+        } else {
+          set({ activePanelId: id })
+        }
+      },
+
+      setObserverMode: (sessionId, isObserver) =>
+        set((s) => ({ observerSessions: { ...s.observerSessions, [sessionId]: isObserver } })),
+
+      setConnectedDevices: (connectedDevices) => set({ connectedDevices }),
+
+      addControlRequest: (request) =>
+        set((s) => ({ controlRequests: [...s.controlRequests, request] })),
+
+      removeControlRequest: (requestId) =>
+        set((s) => ({
+          controlRequests: s.controlRequests.filter((r) => r.requestId !== requestId),
+        })),
+
+      addSession: () => {
+        const MAX_SESSIONS = 10
+        const { sessions } = get()
+        if (sessions.length >= MAX_SESSIONS) return
+        const newId = crypto.randomUUID()
+        const num = sessions.length + 1
+        set({
+          sessions: [
+            ...sessions,
+            { id: newId, status: 'IDLE', label: `Term ${num}`, adapterName: get().activeAdapter },
+          ],
+        })
+      },
+
+      removeSession: (index) => {
+        const { sessions, activeSessionIndex, terminalSessions, splitRoot } = get()
+        if (sessions.length <= 1) return
+        const removedId = sessions[index].id
+        const newSessions = sessions.filter((_, i) => i !== index)
+        // Clean up terminalSessions references to removed session
+        const cleanedTs = Object.fromEntries(
+          Object.entries(terminalSessions).filter(([_, sid]) => sid !== removedId),
+        )
+        // Remove split panels that were showing the killed session
+        let newSplitRoot = splitRoot
+        const panels = collectPanels(splitRoot)
+        for (const panel of panels) {
+          if (panel.type === 'terminal' && terminalSessions[panel.id] === removedId) {
+            const result = removeTreeNode(splitRoot, panel.id)
+            if (result) newSplitRoot = result
+          }
+        }
+        let newActiveIndex = activeSessionIndex
+        if (index < activeSessionIndex) {
+          newActiveIndex = activeSessionIndex - 1
+        } else if (index === activeSessionIndex) {
+          newActiveIndex = Math.min(activeSessionIndex, newSessions.length - 1)
+        }
+        set({
+          sessions: newSessions,
+          activeSessionIndex: newActiveIndex,
+          sessionId: newSessions[newActiveIndex]?.id ?? null,
+          terminalSessions: cleanedTs,
+          splitRoot: newSplitRoot,
+        })
+      },
+
+      removeSessionById: (sessionId) => {
+        const { sessions, activeSessionIndex } = get()
+        const index = sessions.findIndex((s) => s.id === sessionId)
+        if (index === -1) return
+        if (sessions.length <= 1) {
+          const newId = crypto.randomUUID()
+          set({
+            sessions: [
+              { id: newId, status: 'IDLE', label: newId.slice(0, 8), adapterName: 'shell' },
+            ],
+            activeSessionIndex: 0,
+            sessionId: newId,
+          })
+          return
+        }
+        const newSessions = sessions.filter((_, i) => i !== index)
+        let newActiveIndex = activeSessionIndex
+        if (index < activeSessionIndex) {
+          newActiveIndex = activeSessionIndex - 1
+        } else if (index === activeSessionIndex) {
+          newActiveIndex = Math.min(activeSessionIndex, newSessions.length - 1)
+        }
+        set({
+          sessions: newSessions,
+          activeSessionIndex: newActiveIndex,
+          sessionId: newSessions[newActiveIndex]?.id ?? null,
+        })
+      },
+
+      updateSessionStatus: (sessionId, status) => {
+        const { sessions } = get()
+        set({
+          sessions: sessions.map((s) => (s.id === sessionId ? { ...s, status } : s)),
+        })
+      },
+
+      switchSession: (index) => {
+        const { sessions, activePanelId, terminalSessions } = get()
+        if (index >= 0 && index < sessions.length) {
+          const sid = sessions[index].id
+          set({
+            activeSessionIndex: index,
+            sessionId: sid,
+            agentStatus: sessions[index].status,
+            terminalSessions: { ...terminalSessions, [activePanelId]: sid },
+          })
+        }
+      },
+
+      loadSessions: (sessions) => {
+        if (sessions.length > 0) {
+          const { terminalSessions } = get()
+          const ts = { ...terminalSessions }
+          if (!ts['terminal-main']) ts['terminal-main'] = sessions[0].id
+          set({
+            sessions,
+            activeSessionIndex: 0,
+            sessionId: sessions[0].id,
+            agentStatus: sessions[0].status,
+            terminalSessions: ts,
+          })
+        }
+      },
+
+      // Split pane actions
+      splitPanel: (targetId, direction, newType, insertBefore) => {
+        const { splitRoot } = get()
+        const newPanel: SplitPanel = { id: genId(), type: newType }
+        const newRoot = splitTree(splitRoot, targetId, direction, newPanel, insertBefore)
+        set({ splitRoot: newRoot })
+      },
+
+      removePanel: (panelId) => {
+        const { splitRoot, panelFiles, terminalSessions } = get()
+        // Find sibling panel to merge files into
+        const parentInfo = findParentWithIndex(splitRoot, panelId)
+        let siblingId: string | null = null
+        if (parentInfo) {
+          const { parent, index } = parentInfo
+          // Try adjacent sibling first
+          const sibling = parent.children[index - 1] ?? parent.children[index + 1]
+          if (sibling && !isContainer(sibling)) {
+            siblingId = sibling.id
+          }
+        }
+        const newRoot = removeTreeNode(splitRoot, panelId)
+        if (newRoot) set({ splitRoot: newRoot })
+        // Merge files into sibling panel
+        const sourceFiles = panelFiles[panelId]
+        if (siblingId && sourceFiles && sourceFiles.files.length > 0) {
+          const targetPf = panelFiles[siblingId]
+          const mergedFiles = targetPf
+            ? [
+                ...targetPf.files.filter(
+                  (f) => !sourceFiles.files.some((sf) => sf.path === f.path),
+                ),
+                ...sourceFiles.files,
+              ]
+            : [...sourceFiles.files]
+          const mergedActive =
+            sourceFiles.activeFilePath ?? targetPf?.activeFilePath ?? mergedFiles[0]?.path ?? null
+          set({
+            panelFiles: {
+              ...Object.fromEntries(Object.entries(panelFiles).filter(([k]) => k !== panelId)),
+              [siblingId]: { files: mergedFiles, activeFilePath: mergedActive },
+            },
+          })
+        } else {
+          const restFiles = { ...panelFiles }
+          delete restFiles[panelId]
+          set({ panelFiles: restFiles })
+        }
+        const restSessions = { ...terminalSessions }
+        delete restSessions[panelId]
+        set({ terminalSessions: restSessions })
+      },
+
+      updateSplitRatios: (containerId, newRatios) => {
+        const { splitRoot } = get()
+        set({ splitRoot: updateTreeRatios(splitRoot, containerId, newRatios) })
+      },
+
+      movePanelDrop: (sourceId, targetId, direction, insertBefore) => {
+        const { splitRoot } = get()
+        set({ splitRoot: moveTreePanel(splitRoot, sourceId, targetId, direction, insertBefore) })
+      },
+
+      addFileToPanel: (panelId, file) => {
+        const { panelFiles } = get()
+        const existing = panelFiles[panelId]
+        if (existing) {
+          const hasFile = existing.files.some((f) => f.path === file.path)
+          set({
+            panelFiles: {
+              ...panelFiles,
+              [panelId]: {
+                files: hasFile ? existing.files : [...existing.files, file],
+                activeFilePath: file.path,
+              },
+            },
+          })
+        } else {
+          set({
+            panelFiles: {
+              ...panelFiles,
+              [panelId]: { files: [file], activeFilePath: file.path },
+            },
+          })
+        }
+      },
+
+      replaceActiveFileInPanel: (panelId, file) => {
+        const { panelFiles } = get()
+        const existing = panelFiles[panelId]
+        if (existing && existing.activeFilePath) {
+          set({
+            panelFiles: {
+              ...panelFiles,
+              [panelId]: {
+                files: existing.files.map((f) => (f.path === existing.activeFilePath ? file : f)),
+                activeFilePath: file.path,
+              },
+            },
+          })
+        } else {
+          set({
+            panelFiles: {
+              ...panelFiles,
+              [panelId]: { files: [file], activeFilePath: file.path },
+            },
+          })
+        }
+      },
+
+      removeFileFromPanel: (panelId, filePath) => {
+        const { panelFiles } = get()
+        const existing = panelFiles[panelId]
+        if (!existing) return
+        const remaining = existing.files.filter((f) => f.path !== filePath)
+        const newActive =
+          filePath === existing.activeFilePath
+            ? remaining.length > 0
+              ? remaining[remaining.length - 1].path
+              : null
+            : existing.activeFilePath
+        set({
+          panelFiles: {
+            ...panelFiles,
+            [panelId]: { files: remaining, activeFilePath: newActive },
+          },
+        })
+      },
+
+      setActiveFile: (panelId, filePath) => {
+        const { panelFiles } = get()
+        const existing = panelFiles[panelId]
+        if (!existing) return
+        set({
+          panelFiles: {
+            ...panelFiles,
+            [panelId]: { ...existing, activeFilePath: filePath },
+          },
+        })
+      },
+
+      getOrCreateEditorPanel: () => {
+        const { splitRoot } = get()
+        const panels = collectPanels(splitRoot)
+        const editorPanel = panels.find((p) => p.type === 'editor')
+        if (editorPanel) return editorPanel.id
+        const newPanel: SplitPanel = { id: genId(), type: 'editor' }
+        const newRoot = splitTree(splitRoot, splitRoot.id, 'horizontal', newPanel, true)
+        set({ splitRoot: newRoot })
+        return newPanel.id
+      },
+
+      openFileInNewSplit: (file, direction = 'vertical') => {
+        const { splitRoot, panelFiles } = get()
+        // Find an existing editor panel to split from
+        const panels = collectPanels(splitRoot)
+        const existingEditor = panels.find((p) => p.type === 'editor')
+        const targetId = existingEditor ? existingEditor.id : splitRoot.id
+        // Create new editor panel
+        const newPanel: SplitPanel = { id: genId(), type: 'editor' }
+        const newRoot = splitTree(splitRoot, targetId, direction, newPanel, false)
+        // Add file to the new panel
+        const restFiles = { ...panelFiles }
+        delete restFiles[newPanel.id]
+        set({
+          splitRoot: newRoot,
+          panelFiles: { ...restFiles, [newPanel.id]: { files: [file], activeFilePath: file.path } },
+        })
+        return newPanel.id
+      },
+
+      setDragState: (state) => set({ dragState: state }),
+
+      splitPanelWithSession: (targetId, direction, sessionId, insertBefore) => {
+        const { splitRoot, terminalSessions, panelFiles } = get()
+
+        const sourceEntry = Object.entries(terminalSessions).find(([_, sid]) => sid === sessionId)
+        const sourcePanelId = sourceEntry?.[0]
+        const isSplitSelf = sourcePanelId === targetId
+
+        // When splitting onto self, keep session on the original panel; new panel starts empty
+        const cleanedTs = isSplitSelf
+          ? terminalSessions
+          : Object.fromEntries(
+              Object.entries(terminalSessions).filter(([_, sid]) => sid !== sessionId),
+            )
+
+        // Remove source panel from layout tree (skip when splitting onto self — panel stays)
+        let currentRoot = splitRoot
+        const cleanedFiles = panelFiles
+        if (!isSplitSelf && sourcePanelId) {
+          const afterRemove = removeTreeNode(currentRoot, sourcePanelId)
+          if (afterRemove) {
+            currentRoot = afterRemove
+            delete cleanedFiles[sourcePanelId]
+          }
+        }
+
+        const newPanel: SplitPanel = { id: genId(), type: 'terminal' }
+        const newRoot = splitTree(currentRoot, targetId, direction, newPanel, insertBefore)
+        set({
+          splitRoot: newRoot,
+          terminalSessions: { ...cleanedTs, ...(!isSplitSelf ? { [newPanel.id]: sessionId } : {}) },
+          panelFiles: cleanedFiles,
+          activePanelId: isSplitSelf ? sourcePanelId : newPanel.id,
+          sessionId,
+        })
+      },
+
+      splitPanelWithFile: (sourcePanelId, targetId, direction, filePath, insertBefore) => {
+        const { splitRoot, panelFiles } = get()
+
+        // Extract the file entry from source panel
+        const sourceFiles = panelFiles[sourcePanelId]
+        const fileEntry = sourceFiles?.files.find((f) => f.path === filePath)
+        if (!fileEntry) return
+
+        // Remove file from source panel
+        const remainingFiles = sourceFiles.files.filter((f) => f.path !== filePath)
+        const newActiveFile =
+          remainingFiles.length > 0 ? remainingFiles[remainingFiles.length - 1].path : null
+
+        let currentRoot = splitRoot
+        const cleanedFiles = { ...panelFiles }
+
+        // If source panel has no files left, remove it from tree
+        if (remainingFiles.length === 0 && sourcePanelId !== targetId) {
+          const afterRemove = removeTreeNode(currentRoot, sourcePanelId)
+          if (afterRemove) {
+            currentRoot = afterRemove
+            delete cleanedFiles[sourcePanelId]
+          } else {
+            cleanedFiles[sourcePanelId] = { files: [], activeFilePath: null }
+          }
+        } else {
+          cleanedFiles[sourcePanelId] = { files: remainingFiles, activeFilePath: newActiveFile }
+        }
+
+        // Create new editor panel at target with the moved file
+        const newPanel: SplitPanel = { id: genId(), type: 'editor' }
+        const newRoot = splitTree(currentRoot, targetId, direction, newPanel, insertBefore)
+        set({
+          splitRoot: newRoot,
+          panelFiles: {
+            ...cleanedFiles,
+            [newPanel.id]: { files: [fileEntry], activeFilePath: filePath },
+          },
+        })
+      },
+
+      // [M7修复] 使用展开运算符创建新对象，避免引用问题
+      reset: () => set({ ...initialState }),
     }),
-
-  setDisconnected: () =>
-    set({
-      isConnected: false,
-      connectionPhase: 'DISCONNECTED',
-    }),
-
-  setSession: (sessionId, label?, attachToTmux?, cwd?) => {
-    const { sessions } = get()
-    const existing = sessions.find((s) => s.id === sessionId)
-    if (!existing) {
-      set({
-        sessionId,
-        sessions: [...sessions, { id: sessionId, status: 'IDLE', label: label || sessionId.slice(0, 8), attachToTmux, cwd }],
-        activeSessionIndex: sessions.length,
-      })
-    } else {
-      set({ sessionId })
-    }
-  },
-
-  setAgentStatus: (status) => {
-    const { sessionId, sessions } = get()
-    set({
-      agentStatus: status,
-      sessions: sessions.map((s) =>
-        s.id === sessionId ? { ...s, status } : s
-      ),
-    })
-  },
-
-  setTokens: (accessToken, refreshToken) =>
-    set({ accessToken, refreshToken }),
-
-  setFontSize: (size) => set({ fontSize: size }),
-
-  setTheme: (theme) => set({ theme }),
-
-  setActiveAdapter: (adapter) => {
-    // Validate adapter value against known adapters
-    const VALID_ADAPTERS = new Set(['claude', 'aider', 'shell'])
-    const safe = VALID_ADAPTERS.has(adapter) ? adapter : 'claude'
-    set({ activeAdapter: safe })
-  },
-
-  addSession: () => {
-    // [R3修复] 限制最大会话数量，防止资源耗尽
-    const MAX_SESSIONS = 10
-    const { sessions } = get()
-    if (sessions.length >= MAX_SESSIONS) return
-    const newId = crypto.randomUUID()
-    set({
-      sessions: [...sessions, { id: newId, status: 'IDLE', label: newId.slice(0, 8) }],
-    })
-  },
-
-  removeSession: (index) => {
-    const { sessions, activeSessionIndex } = get()
-    if (sessions.length <= 1) return
-    const newSessions = sessions.filter((_, i) => i !== index)
-    let newActiveIndex = activeSessionIndex
-    if (index < activeSessionIndex) {
-      newActiveIndex = activeSessionIndex - 1
-    } else if (index === activeSessionIndex) {
-      newActiveIndex = Math.min(activeSessionIndex, newSessions.length - 1)
-    }
-    set({
-      sessions: newSessions,
-      activeSessionIndex: newActiveIndex,
-      sessionId: newSessions[newActiveIndex]?.id ?? null,
-    })
-  },
-
-  updateSessionStatus: (sessionId, status) => {
-    const { sessions } = get()
-    set({
-      sessions: sessions.map((s) =>
-        s.id === sessionId ? { ...s, status } : s
-      ),
-    })
-  },
-
-  switchSession: (index) => {
-    const { sessions } = get()
-    if (index >= 0 && index < sessions.length) {
-      set({
-        activeSessionIndex: index,
-        sessionId: sessions[index].id,
-        agentStatus: sessions[index].status,
-      })
-    }
-  },
-
-  loadSessions: (sessions) => {
-    if (sessions.length > 0) {
-      set({
-        sessions,
-        activeSessionIndex: 0,
-        sessionId: sessions[0].id,
-        agentStatus: sessions[0].status,
-      })
-    }
-  },
-
-  // [M7修复] 使用展开运算符创建新对象，避免引用问题
-  reset: () => set({ ...initialState }),
-}))
+    {
+      name: 'ai-cli-layout',
+      // [M-#4修复] NOTE: Never persist accessToken/refreshToken here — they belong in sessionStorage via useAuth only
+      partialize: (state) => ({
+        fontSize: state.fontSize,
+        editorFontSize: state.editorFontSize,
+        uiTheme: state.uiTheme,
+        editorTheme: state.editorTheme,
+        terminalTheme: state.terminalTheme,
+        activeAdapter: state.activeAdapter,
+        sidebarOpen: state.sidebarOpen,
+        sidebarWidth: state.sidebarWidth,
+        splitRoot: state.splitRoot,
+        panelFiles: state.panelFiles,
+        terminalSessions: state.terminalSessions,
+        sessions: state.sessions,
+        activeSessionIndex: state.activeSessionIndex,
+      }),
+      version: 1,
+    },
+  ),
+)

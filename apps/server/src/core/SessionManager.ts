@@ -7,6 +7,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import stripAnsi from 'strip-ansi'
 import pty from 'node-pty'
+import os from 'os'
 import { auditLog } from './audit.js'
 import { SessionRecorder } from './recorder.js'
 import { pinoLogger } from '../lib/logger.js'
@@ -29,17 +30,31 @@ const SAFE_SESSION_ID = /^[a-zA-Z0-9_-]+$/
 const DEFAULT_COLS = 80 // fallback terminal columns when restoring orphan sessions
 const DEFAULT_ROWS = 24 // fallback terminal rows when restoring orphan sessions
 
+export interface DeviceEntry {
+  id: string
+  ws: WebSocket
+  ctrlWs?: WebSocket
+  username: string
+  role: 'controller' | 'observer'
+  connectedAt: number
+  deviceName: string
+  pendingRequestId?: string
+}
+
 interface Session {
   sessionId: string
-  ownerId: string // [C1修复] 会话归属用户ID，用于权限校验
+  ownerId: string
   adapterName: string
   adapter: CLIAdapter
   ptyProcess: pty.IPty
-  tmuxSessionName: string // actual tmux session name (aicli-* or external name)
+  tmuxSessionName: string
   status: AgentStatus
   termClients: Set<WebSocket>
   ctrlClients: Set<WebSocket>
   observeClients: Set<WebSocket>
+  devices: Map<string, DeviceEntry>
+  controllerDeviceId: string | null
+  sharedWith: Map<string, 'read' | 'write'> // userId → permission
   throttleTimer: NodeJS.Timeout | null
   outputBuffer: Buffer[]
   lastBroadcast: number
@@ -60,16 +75,20 @@ export class SessionManager extends EventEmitter {
   private errorRecoveryTimer: NodeJS.Timeout | null = null
   private fuseCleanupTimer: NodeJS.Timeout | null = null // [R4修复] 保存引用以便 destroy() 清理
   private sessionStore: SessionStore
+  private creatingSessions = new Set<string>()
 
   constructor(adapters: Map<string, CLIAdapter>) {
     super()
     this.adapters = adapters
     this.sessionStore = new SessionStore()
-    this.sessionStore.load()
-    this.checkTmuxAvailable()
-    this.reapOrphanSessions().catch((err) => {
-      pinoLogger.error({ err }, 'Failed to reap orphan sessions')
-    })
+    // [M-#5修复] load() 已改为异步，移至 init() 中 await 调用
+  }
+
+  // [M-#5修复] 异步初始化：加载持久化数据、检查 tmux、清理孤儿会话
+  async init(): Promise<void> {
+    await this.sessionStore.load()
+    await this.checkTmuxAvailable()
+    await this.reapOrphanSessions()
     this.startErrorRecoveryLoop()
     this.startFuseTimerCleanup()
   }
@@ -145,6 +164,10 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Invalid sessionId: ${sessionId}`)
     }
 
+    if (this.creatingSessions.has(sessionId)) {
+      throw new Error('Session creation in progress')
+    }
+
     const existing = this.sessions.get(sessionId)
     if (existing) {
       // Resize to match current terminal dimensions when reattaching
@@ -161,91 +184,113 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Unknown adapter: ${adapterName}`)
     }
 
-    // [R9] Defense-in-depth: validate cols/rows at creation point (not just WSGateway)
-    // Uses shared constants from @ai-cli/shared to avoid DRY violation
-    if (
-      !Number.isFinite(cols) ||
-      !Number.isFinite(rows) ||
-      cols < TERM_COLS_MIN ||
-      cols > TERM_COLS_MAX ||
-      rows < TERM_ROWS_MIN ||
-      rows > TERM_ROWS_MAX
-    ) {
-      throw new Error(
-        `Invalid terminal dimensions: ${cols}x${rows} (allowed: ${TERM_COLS_MIN}-${TERM_COLS_MAX}x${TERM_ROWS_MIN}-${TERM_ROWS_MAX})`,
-      )
-    }
-
-    let tmuxSessionName: string
-    let ptyProcess: pty.IPty
-
-    if (attachToTmux) {
-      // Attach to existing tmux session
-      tmuxSessionName = attachToTmux
-      ptyProcess = pty.spawn('tmux', ['attach', '-t', attachToTmux], {})
-    } else {
-      // Create new tmux session
-      tmuxSessionName = `aicli-${sessionId}`
-      ptyProcess = pty.spawn(
-        'tmux',
-        [
-          'new-session',
-          '-A',
-          '-s',
-          tmuxSessionName,
-          '-x',
-          String(cols),
-          '-y',
-          String(rows),
-          '-c',
-          cwd || getConfig().PROJECT_ROOT,
-          adapter.startCommand,
-        ],
-        {},
-      )
-    }
-
-    const session: Session = {
-      sessionId,
-      ownerId,
-      adapterName,
-      adapter,
-      ptyProcess,
-      tmuxSessionName,
-      status: 'IDLE',
-      termClients: new Set(),
-      ctrlClients: new Set(),
-      observeClients: new Set(),
-      throttleTimer: null,
-      outputBuffer: [],
-      lastBroadcast: 0,
-      recorder: new SessionRecorder(),
-    }
-
-    ptyProcess.onData((data: string) => {
-      this.onData(session, data)
-    })
-
-    ptyProcess.onExit(({ exitCode }) => {
-      if (exitCode !== 0) {
-        this.updateStatus(session, 'ERROR', `Process exited with code ${exitCode}`)
-      } else {
-        this.updateStatus(session, 'IDLE')
+    this.creatingSessions.add(sessionId)
+    try {
+      // [R9] Defense-in-depth: validate cols/rows at creation point (not just WSGateway)
+      // Uses shared constants from @ai-cli/shared to avoid DRY violation
+      if (
+        !Number.isFinite(cols) ||
+        !Number.isFinite(rows) ||
+        cols < TERM_COLS_MIN ||
+        cols > TERM_COLS_MAX ||
+        rows < TERM_ROWS_MIN ||
+        rows > TERM_ROWS_MAX
+      ) {
+        throw new Error(
+          `Invalid terminal dimensions: ${cols}x${rows} (allowed: ${TERM_COLS_MIN}-${TERM_COLS_MAX}x${TERM_ROWS_MIN}-${TERM_ROWS_MAX})`,
+        )
       }
-    })
 
-    this.sessions.set(sessionId, session)
-    this.sessionStore.set(sessionId, {
-      sessionId,
-      adapterName,
-      tmuxSessionName,
-      status: 'IDLE',
-      ownerId,
-      createdAt: new Date().toISOString(),
-      lastActive: new Date().toISOString(),
-    })
-    auditLog('SESSION_CREATE', undefined, { sessionId, adapter: adapterName })
-    return session
+      let tmuxSessionName: string
+      let ptyProcess: pty.IPty
+
+      if (attachToTmux) {
+        // [S-H2] Validate tmux session name to prevent injection
+        if (!SAFE_SESSION_ID.test(attachToTmux)) {
+          throw new Error(`Invalid tmux session name: ${attachToTmux}`)
+        }
+        // Attach to existing tmux session — pass cols/rows so tmux uses our
+        // terminal dimensions instead of the previous client's dimensions.
+        // Without this, the screen capture has wrong cursor position.
+        tmuxSessionName = attachToTmux
+        ptyProcess = pty.spawn('tmux', ['attach', '-t', attachToTmux], { cols, rows })
+      } else {
+        // Create new tmux session
+        tmuxSessionName = `aicli-${sessionId}`
+        ptyProcess = pty.spawn(
+          'tmux',
+          [
+            'new-session',
+            '-A',
+            '-s',
+            tmuxSessionName,
+            '-x',
+            String(cols),
+            '-y',
+            String(rows),
+            '-c',
+            (cwd?.startsWith('~') ? cwd.replace(/^~/, os.homedir()) : cwd) ||
+              getConfig().PROJECT_ROOT,
+            adapter.startCommand,
+          ],
+          {},
+        )
+      }
+
+      const session: Session = {
+        sessionId,
+        ownerId,
+        adapterName,
+        adapter,
+        ptyProcess,
+        tmuxSessionName,
+        status: 'IDLE',
+        termClients: new Set(),
+        ctrlClients: new Set(),
+        observeClients: new Set(),
+        devices: new Map(),
+        controllerDeviceId: null,
+        sharedWith: new Map(),
+        throttleTimer: null,
+        outputBuffer: [],
+        lastBroadcast: 0,
+        recorder: new SessionRecorder(),
+      }
+
+      ptyProcess.onData((data: string) => {
+        this.onData(session, data)
+      })
+
+      ptyProcess.onExit(({ exitCode }) => {
+        if (exitCode !== 0) {
+          this.updateStatus(session, 'ERROR', `Process exited with code ${exitCode}`)
+        } else {
+          this.updateStatus(session, 'IDLE')
+        }
+        // Auto-destroy session after brief delay so user sees the exit message
+        // This handles cases like Claude Code permission denied where the terminal is useless after exit
+        setTimeout(() => {
+          if (this.sessions.has(sessionId)) {
+            this.destroySession(sessionId)
+          }
+        }, 2000)
+      })
+
+      this.sessions.set(sessionId, session)
+      this.sessionStore.set(sessionId, {
+        sessionId,
+        adapterName,
+        tmuxSessionName,
+        status: 'IDLE',
+        ownerId,
+        createdAt: new Date().toISOString(),
+        lastActive: new Date().toISOString(),
+      })
+      auditLog('SESSION_CREATE', undefined, { sessionId, adapter: adapterName })
+      return session
+    } finally {
+      this.creatingSessions.delete(sessionId)
+    }
   }
 
   private onData(session: Session, data: string): void {
@@ -318,28 +363,36 @@ export class SessionManager extends EventEmitter {
     if (!candidate || candidate.confidence <= STATE_FUSE_MIN_CONFIDENCE) return
 
     try {
-      // [C2修复] 使用 execFile 替代 exec
       const { stdout } = await execFileAsync('tmux', [
         'capture-pane',
         '-p',
         '-t',
         session.tmuxSessionName,
       ])
-      const screenStatus = session.adapter.parseScreenSnapshot(stdout)
+      const screenResult = session.adapter.parseScreenSnapshot(stdout)
 
-      if (screenStatus !== null) {
-        this.updateStatus(session, screenStatus)
+      if (typeof screenResult === 'object' && screenResult !== null && 'status' in screenResult) {
+        if (screenResult.status !== null) {
+          this.updateStatus(session, screenResult.status, undefined, screenResult.options)
+        }
+      } else if (screenResult !== null) {
+        this.updateStatus(session, screenResult as AgentStatus)
       } else {
         this.updateStatus(session, candidate.status)
       }
     } catch {
-      // tmux capture-pane failed (e.g. session died) — fallback to stream-based status
       this.updateStatus(session, candidate.status)
     }
   }
 
-  private updateStatus(session: Session, newStatus: AgentStatus, message?: string): void {
-    if (session.status === newStatus) return
+  private updateStatus(
+    session: Session,
+    newStatus: AgentStatus,
+    message?: string,
+    options?: Array<{ label: string; payload: string }>,
+  ): void {
+    const changed = session.status !== newStatus
+    if (!changed && !options) return
 
     session.status = newStatus
     this.emit('statusChange', session.sessionId, newStatus)
@@ -348,6 +401,7 @@ export class SessionManager extends EventEmitter {
       sessionId: session.sessionId,
       status: newStatus,
       ...(message ? { message } : {}),
+      ...(options ? { options } : {}),
     })
 
     // Persist status change
@@ -372,19 +426,47 @@ export class SessionManager extends EventEmitter {
     if (!session) throw new Error(`Session not found: ${sessionId}`)
 
     if (termWs) {
+      // 立即加入 termClients，确保后续 PTY 输出不会丢失
       session.termClients.add(termWs)
 
-      // [C2修复] 使用 execFile 替代 exec
-      execFileAsync('tmux', ['capture-pane', '-p', '-e', '-t', session.tmuxSessionName])
-        .then(({ stdout }) => {
-          if (stdout && termWs.readyState === 1) {
-            // Clear screen + cursor home, then write captured content
-            termWs.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
-          }
-        })
-        .catch(() => {
-          /* intentionally ignored — stdout flush is best-effort */
-        })
+      // 延迟 300ms 等待 tmux 处理完 resize 后再捕获屏幕
+      // DOM 渲染器能正确处理大量 ANSI 数据，使用 -S -3000 恢复历史
+      setTimeout(() => {
+        Promise.all([
+          execFileAsync('tmux', [
+            'capture-pane',
+            '-p',
+            '-e',
+            '-S',
+            '-3000',
+            '-t',
+            session.tmuxSessionName,
+          ]),
+          execFileAsync('tmux', [
+            'display-message',
+            '-t',
+            session.tmuxSessionName,
+            '-p',
+            '#{cursor_x} #{cursor_y}',
+          ]),
+        ])
+          .then(([captureResult, cursorResult]) => {
+            if (termWs.readyState !== 1) return
+            const stdout = captureResult.stdout
+            if (stdout) {
+              termWs.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
+            }
+            const match = cursorResult.stdout?.trim().match(/(\d+)\s+(\d+)/)
+            if (match) {
+              const col = parseInt(match[1]) + 1
+              const row = parseInt(match[2]) + 1
+              termWs.send(Buffer.from(`\x1b[${row};${col}H`))
+            }
+          })
+          .catch(() => {
+            /* best-effort screen capture */
+          })
+      }, 300)
     }
 
     if (ctrlWs) {
@@ -412,17 +494,43 @@ export class SessionManager extends EventEmitter {
 
     session.observeClients.add(ws)
 
-    // Send current screen to observer
-    // [C2修复] 使用 execFile 替代 exec
-    execFileAsync('tmux', ['capture-pane', '-p', '-e', '-t', session.tmuxSessionName])
-      .then(({ stdout }) => {
-        if (stdout && ws.readyState === 1) {
-          ws.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
-        }
-      })
-      .catch(() => {
-        /* best-effort tmux capture — may fail if session ended */
-      })
+    // 延迟后捕获屏幕含历史，DOM 渲染器可正确处理
+    setTimeout(() => {
+      Promise.all([
+        execFileAsync('tmux', [
+          'capture-pane',
+          '-p',
+          '-e',
+          '-S',
+          '-3000',
+          '-t',
+          session.tmuxSessionName,
+        ]),
+        execFileAsync('tmux', [
+          'display-message',
+          '-t',
+          session.tmuxSessionName,
+          '-p',
+          '#{cursor_x} #{cursor_y}',
+        ]),
+      ])
+        .then(([captureResult, cursorResult]) => {
+          if (ws.readyState !== 1) return
+          const stdout = captureResult.stdout
+          if (stdout) {
+            ws.send(Buffer.from('\x1b[2J\x1b[H' + stdout))
+          }
+          const match = cursorResult.stdout?.trim().match(/(\d+)\s+(\d+)/)
+          if (match) {
+            const col = parseInt(match[1]) + 1
+            const row = parseInt(match[2]) + 1
+            ws.send(Buffer.from(`\x1b[${row};${col}H`))
+          }
+        })
+        .catch(() => {
+          /* best-effort tmux capture */
+        })
+    }, 300)
   }
 
   /**
@@ -435,6 +543,192 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId)
     if (!session) return
     session.observeClients.delete(ws)
+  }
+
+  // ========== Device Management ==========
+
+  registerDevice(
+    sessionId: string,
+    termWs: WebSocket,
+    ctrlWs: WebSocket,
+    username: string,
+    deviceName: string,
+  ): { deviceId: string; isObserver: boolean } {
+    const session = this.sessions.get(sessionId)
+    if (!session) throw new Error(`Session not found: ${sessionId}`)
+
+    const deviceId = crypto.randomUUID()
+
+    // 清除同一用户的旧设备（页面刷新/重连时避免竞争条件）
+    // 如果旧设备是 controller，新设备直接继承 controller 角色
+    let inheritController = false
+    for (const [oldId, dev] of session.devices) {
+      if (dev.username === username) {
+        if (session.controllerDeviceId === oldId) {
+          inheritController = true
+        }
+        session.devices.delete(oldId)
+        // 关闭旧 WS 连接（可能还半开）
+        try {
+          dev.ws.close()
+        } catch {
+          /* already closed */
+        }
+        try {
+          dev.ctrlWs?.close()
+        } catch {
+          /* already closed */
+        }
+        break
+      }
+    }
+
+    const isObserver = inheritController ? false : session.controllerDeviceId !== null
+
+    const device: DeviceEntry = {
+      id: deviceId,
+      ws: termWs,
+      ctrlWs,
+      username,
+      role: isObserver ? 'observer' : 'controller',
+      connectedAt: Date.now(),
+      deviceName: deviceName || 'Unknown',
+    }
+
+    if (!isObserver) {
+      session.controllerDeviceId = deviceId
+    }
+
+    session.devices.set(deviceId, device)
+    return { deviceId, isObserver }
+  }
+
+  unregisterDevice(sessionId: string, deviceId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+    session.devices.delete(deviceId)
+    if (session.controllerDeviceId === deviceId) {
+      session.controllerDeviceId = null
+      // Promote first available device to controller
+      for (const [id, dev] of session.devices) {
+        dev.role = 'controller'
+        session.controllerDeviceId = id
+        dev.ctrlWs?.send(JSON.stringify({ type: 'CONTROL_GRANTED', sessionId }))
+        break
+      }
+    }
+  }
+
+  requestControl(sessionId: string, requesterCtrlWs: WebSocket, username: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    const controller = session.controllerDeviceId
+      ? session.devices.get(session.controllerDeviceId)
+      : null
+    const requestId = crypto.randomUUID()
+
+    // Store pendingRequestId on the requester's device
+    for (const dev of session.devices.values()) {
+      if (dev.ctrlWs === requesterCtrlWs) {
+        dev.pendingRequestId = requestId
+        break
+      }
+    }
+
+    if (controller?.ctrlWs && controller.ctrlWs.readyState === 1) {
+      controller.ctrlWs.send(
+        JSON.stringify({
+          type: 'CONTROL_REQUESTED',
+          sessionId,
+          requestId,
+          deviceName: 'Device',
+          username,
+        }),
+      )
+    }
+  }
+
+  grantControl(sessionId: string, requestId: string, currentControllerCtrlWs: WebSocket): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    // Find the requester by matching pendingRequestId
+    for (const [id, dev] of session.devices) {
+      if (dev.role === 'observer' && dev.pendingRequestId === requestId) {
+        // Demote current controller
+        if (session.controllerDeviceId) {
+          const current = session.devices.get(session.controllerDeviceId)
+          if (current) {
+            current.role = 'observer'
+            current.ctrlWs?.send(
+              JSON.stringify({ type: 'OBSERVER_MODE', sessionId, isObserver: true }),
+            )
+          }
+        }
+        // Promote this observer
+        dev.role = 'controller'
+        session.controllerDeviceId = id
+        dev.pendingRequestId = undefined
+        dev.ctrlWs?.send(JSON.stringify({ type: 'CONTROL_GRANTED', sessionId }))
+        return
+      }
+    }
+  }
+
+  forceTakeControl(sessionId: string, requesterCtrlWs: WebSocket, isAdmin: boolean): void {
+    if (!isAdmin) return
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    // Find device by ctrlWs
+    for (const [id, dev] of session.devices) {
+      if (dev.ctrlWs === requesterCtrlWs) {
+        // Demote current controller
+        if (session.controllerDeviceId && session.controllerDeviceId !== id) {
+          const current = session.devices.get(session.controllerDeviceId)
+          if (current) {
+            current.role = 'observer'
+            current.ctrlWs?.send(
+              JSON.stringify({ type: 'OBSERVER_MODE', sessionId, isObserver: true }),
+            )
+          }
+        }
+        dev.role = 'controller'
+        session.controllerDeviceId = id
+        dev.ctrlWs?.send(JSON.stringify({ type: 'CONTROL_GRANTED', sessionId }))
+        return
+      }
+    }
+  }
+
+  getConnectedDevices(
+    sessionId: string,
+  ): Array<{
+    id: string
+    deviceName: string
+    username: string
+    role: string
+    connectedAt: number
+  }> {
+    const session = this.sessions.get(sessionId)
+    if (!session) return []
+    return [...session.devices.values()].map((d) => ({
+      id: d.id,
+      deviceName: d.deviceName,
+      username: d.username,
+      role: d.role,
+      connectedAt: d.connectedAt,
+    }))
+  }
+
+  isDeviceController(sessionId: string, ws: WebSocket): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session || !session.controllerDeviceId) return true // no devices tracked yet = allow
+    const controller = session.devices.get(session.controllerDeviceId)
+    if (!controller) return true
+    // Check if this ws is the controller's term WS
+    return controller.ws === ws
   }
 
   /**
@@ -450,6 +744,19 @@ export class SessionManager extends EventEmitter {
 
     if (termWs) session.termClients.delete(termWs)
     if (ctrlWs) session.ctrlClients.delete(ctrlWs)
+  }
+
+  /**
+   * Check whether a resize should be applied for this session.
+   * When multiple terminal clients are attached, skip resize to prevent
+   * multi-device rendering conflicts (each device has different screen size).
+   */
+  shouldResize(sessionId: string): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session) return false
+    // Always allow resize — each device sends its own dimensions.
+    // The last resize wins, which is correct for the active device.
+    return true
   }
 
   /**
@@ -522,6 +829,8 @@ export class SessionManager extends EventEmitter {
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean)
+        // [M-#9修复] 验证 tmux 会话名格式，过滤非法名称
+        .filter((name) => SAFE_SESSION_ID.test(name))
 
       // Restore persisted sessions whose tmux sessions are still alive
       for (const [sessionId, persisted] of this.sessionStore.entries()) {
@@ -598,11 +907,11 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId)
     if (!session) return
 
-    // [M15修复] 关闭前先发送 ERROR 通知客户端
+    // Notify clients that the session is being destroyed
     this.broadcastControl(sessionId, {
-      type: 'ERROR',
-      message: 'Session is being destroyed',
-    })
+      type: 'SESSION_DESTROYED',
+      sessionId,
+    } as { type: 'SESSION_DESTROYED'; sessionId: string })
 
     const fuseTimer = this.fuseTimers.get(sessionId)
     if (fuseTimer) {
@@ -610,6 +919,12 @@ export class SessionManager extends EventEmitter {
       this.fuseTimers.delete(sessionId)
     }
     this.fuseTexts.delete(sessionId)
+
+    // Clean up throttle timer
+    if (session.throttleTimer) {
+      clearTimeout(session.throttleTimer)
+      session.throttleTimer = null
+    }
 
     // [N4修复] 关闭 Terminal channel 前发送 ERROR 消息，告知关闭原因
     const termErrorMsg = JSON.stringify({ type: 'ERROR', message: 'Session destroyed' })
@@ -631,6 +946,10 @@ export class SessionManager extends EventEmitter {
     } catch {
       // Process may already be dead
     }
+
+    void execFileAsync('tmux', ['kill-session', '-t', session.tmuxSessionName]).catch(() => {
+      /* tmux session may already be gone */
+    })
 
     this.sessions.delete(sessionId)
     this.sessionStore.delete(sessionId)
@@ -680,8 +999,36 @@ export class SessionManager extends EventEmitter {
     }))
   }
 
+  // [M-#3修复] 按用户过滤会话：admin 返回全部，普通用户只返回自己的和被共享的
+  listSessionsForUser(
+    userId: string,
+    role: string,
+  ): Array<{
+    sessionId: string
+    status: AgentStatus
+    tmuxSessionName: string
+    adapterName: string
+  }> {
+    const all = [...this.sessions.values()]
+    if (role === 'admin') {
+      return all.map((s) => ({
+        sessionId: s.sessionId,
+        status: s.status,
+        tmuxSessionName: s.tmuxSessionName,
+        adapterName: s.adapterName,
+      }))
+    }
+    return all
+      .filter((s) => s.ownerId === userId || s.sharedWith.has(userId))
+      .map((s) => ({
+        sessionId: s.sessionId,
+        status: s.status,
+        tmuxSessionName: s.tmuxSessionName,
+        adapterName: s.adapterName,
+      }))
+  }
+
   /**
-   * Get all active session ids.
    *
    * @returns Array of session id strings
    */
@@ -824,6 +1171,10 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(sessionId)?.ownerId ?? null
   }
 
+  getSession(sessionId: string): Session | undefined {
+    return this.sessions.get(sessionId)
+  }
+
   /**
    * Get the CLI adapter bound to a session.
    *
@@ -871,10 +1222,51 @@ export class SessionManager extends EventEmitter {
     })
   }
 
+  // ========== Session Sharing ==========
+
+  shareSession(
+    sessionId: string,
+    ownerId: string,
+    targetUserId: string,
+    permission: 'read' | 'write',
+  ): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.ownerId !== ownerId) return false
+    session.sharedWith.set(targetUserId, permission)
+    return true
+  }
+
+  unshareSession(sessionId: string, ownerId: string, targetUserId: string): boolean {
+    const session = this.sessions.get(sessionId)
+    if (!session || session.ownerId !== ownerId) return false
+    session.sharedWith.delete(targetUserId)
+    return true
+  }
+
+  getSharedSessions(
+    userId: string,
+  ): Array<{ sessionId: string; ownerId: string; permission: string }> {
+    const result: Array<{ sessionId: string; ownerId: string; permission: string }> = []
+    for (const session of this.sessions.values()) {
+      const perm = session.sharedWith.get(userId)
+      if (perm) {
+        result.push({ sessionId: session.sessionId, ownerId: session.ownerId, permission: perm })
+      }
+    }
+    return result
+  }
+
+  getSessionPermission(sessionId: string, userId: string): 'owner' | 'read' | 'write' | null {
+    const session = this.sessions.get(sessionId)
+    if (!session) return null
+    if (session.ownerId === userId) return 'owner'
+    return session.sharedWith.get(userId) ?? null
+  }
+
   /**
    * Destroy all sessions and clean up timers. Call on server shutdown.
    */
-  destroy(): void {
+  async destroy(): Promise<void> {
     if (this.errorRecoveryTimer) {
       clearInterval(this.errorRecoveryTimer)
       this.errorRecoveryTimer = null
@@ -899,6 +1291,96 @@ export class SessionManager extends EventEmitter {
     this.fuseTexts.clear()
 
     // Flush any pending session store writes
-    this.sessionStore.flush()
+    await this.sessionStore.flush()
+  }
+
+  // ========== Tmux Pane Management ==========
+
+  async getPanes(
+    sessionId: string,
+  ): Promise<Array<{ index: number; title: string; active: boolean; command: string }>> {
+    const session = this.sessions.get(sessionId)
+    if (!session) return []
+    try {
+      const { stdout } = await execFileAsync('tmux', [
+        'list-panes',
+        '-t',
+        session.tmuxSessionName,
+        '-F',
+        '#{pane_index}:#{pane_title}:#{pane_active}:#{pane_current_command}',
+      ])
+      return stdout
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [idx, title, active, command] = line.split(':')
+          return { index: parseInt(idx), title, active: active === '1', command }
+        })
+    } catch {
+      return []
+    }
+  }
+
+  async selectPane(sessionId: string, paneIndex: number): Promise<boolean> {
+    const session = this.sessions.get(sessionId)
+    if (!session) return false
+    try {
+      const target = `${session.tmuxSessionName}:0.${paneIndex}`
+      // If already zoomed, unzoom first
+      await execFileAsync('tmux', ['resize-pane', '-Z', '-t', session.tmuxSessionName]).catch(
+        () => {},
+      )
+      // Select and zoom the target pane
+      await execFileAsync('tmux', ['select-pane', '-t', target])
+      await execFileAsync('tmux', ['resize-pane', '-Z', '-t', target])
+      // Re-capture and send to all term clients
+      await this.recaptureScreen(session)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async recaptureScreen(session: Session): Promise<void> {
+    try {
+      const [captureResult, cursorResult] = await Promise.all([
+        execFileAsync('tmux', [
+          'capture-pane',
+          '-p',
+          '-e',
+          '-S',
+          '-3000',
+          '-t',
+          session.tmuxSessionName,
+        ]),
+        execFileAsync('tmux', [
+          'display-message',
+          '-t',
+          session.tmuxSessionName,
+          '-p',
+          '#{cursor_x} #{cursor_y}',
+        ]),
+      ])
+      const buf = Buffer.from('\x1b[2J\x1b[H' + captureResult.stdout)
+      for (const client of session.termClients) {
+        if (client.readyState === 1) client.send(buf)
+      }
+      for (const client of session.observeClients) {
+        if (client.readyState === 1) client.send(buf)
+      }
+      const match = cursorResult.stdout?.trim().match(/(\d+)\s+(\d+)/)
+      if (match) {
+        const cursorBuf = Buffer.from(`\x1b[${parseInt(match[2]) + 1};${parseInt(match[1]) + 1}H`)
+        for (const client of session.termClients) {
+          if (client.readyState === 1) client.send(cursorBuf)
+        }
+        for (const client of session.observeClients) {
+          if (client.readyState === 1) client.send(cursorBuf)
+        }
+      }
+    } catch {
+      /* best-effort */
+    }
   }
 }

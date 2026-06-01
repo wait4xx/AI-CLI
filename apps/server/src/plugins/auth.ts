@@ -7,37 +7,60 @@ import path from 'path'
 import { pinoLogger } from '../lib/logger.js'
 import { getConfig } from '../lib/config.js'
 
-const WHITELIST_PATHS = ['/health', '/api/auth/login', '/api/auth/refresh', '/ws/terminal', '/ws/control']
+const WHITELIST_PATHS = [
+  '/health',
+  '/api/auth/login',
+  '/api/auth/refresh',
+  '/ws/terminal',
+  '/ws/control',
+]
 
 export interface StoredUser {
   userId: string
   username: string
   passwordHash: string
+  role: 'admin' | 'user'
+  tokenVersion: number
   createdAt: string
 }
 
 function getUsersFilePath(): string {
-  return path.join(getConfig().PROJECT_ROOT, '.users.json')
+  return path.join(getConfig().DATA_DIR, 'users.json')
 }
 
 const users = new Map<string, StoredUser>()
 
-function loadUsers(): void {
+// [M-#5修复] 改为异步 loadUsers，使用 fs.promises.readFile 避免阻塞事件循环
+export async function loadUsers(): Promise<void> {
   try {
     const usersFilePath = getUsersFilePath()
-    if (fs.existsSync(usersFilePath)) {
-      const data = fs.readFileSync(usersFilePath, 'utf-8')
-      const parsed: Record<string, StoredUser> = JSON.parse(data)
-      for (const [key, value] of Object.entries(parsed)) {
-        users.set(key, value)
-      }
+    const { promises: fsp } = fs
+    const data = await fsp.readFile(usersFilePath, 'utf-8')
+    const parsed: Record<string, StoredUser> = JSON.parse(data)
+    for (const [key, value] of Object.entries(parsed)) {
+      users.set(key, value)
     }
   } catch (err) {
     pinoLogger.error({ err }, 'Failed to load users file')
   }
+
+  // Migrate missing fields after loading
+  const adminUsername = getConfig().ADMIN_USERNAME
+  let dirty = false
+  for (const [username, user] of users) {
+    if (!user.role) {
+      user.role = username === adminUsername ? ('admin' as const) : ('user' as const)
+      dirty = true
+    }
+    if (user.tokenVersion === undefined) {
+      user.tokenVersion = 0
+      dirty = true
+    }
+  }
+  if (dirty) void saveUsers()
 }
 
-function saveUsers(): void {
+async function saveUsers(): Promise<void> {
   try {
     const usersFilePath = getUsersFilePath()
     const obj: Record<string, StoredUser> = {}
@@ -50,17 +73,16 @@ function saveUsers(): void {
     }
     // [S4修复] write-then-rename 原子写入，防止写入中途崩溃导致数据损坏
     const tmpPath = usersFilePath + '.tmp'
-    fs.writeFileSync(tmpPath, JSON.stringify(obj, null, 2), 'utf-8')
-    fs.renameSync(tmpPath, usersFilePath)
+    const { promises: fsp } = fs
+    await fsp.writeFile(tmpPath, JSON.stringify(obj, null, 2), 'utf-8')
+    await fsp.rename(tmpPath, usersFilePath)
   } catch (err) {
     pinoLogger.error({ err }, 'Failed to save users file')
-    // Re-throw so callers know persistence failed
     throw new Error('Failed to persist user data')
   }
 }
 
-// Load existing users on module init
-loadUsers()
+// [M-#5修复] users 在 server start() 中通过 await loadUsers() 加载，不再在模块初始化时同步加载
 
 export function getUser(username: string): StoredUser | undefined {
   return users.get(username)
@@ -70,29 +92,52 @@ export function hasUser(username: string): boolean {
   return users.has(username)
 }
 
-export function createUser(username: string, user: StoredUser): void {
+export async function createUser(username: string, user: StoredUser): Promise<void> {
   users.set(username, user)
-  saveUsers()
+  await saveUsers()
 }
 
 export function listUsers(): StoredUser[] {
   return [...users.values()]
 }
 
-export function updateUserPassword(username: string, newPasswordHash: string): boolean {
+export async function updateUserPassword(
+  username: string,
+  newPasswordHash: string,
+): Promise<boolean> {
   const user = users.get(username)
   if (!user) return false
   user.passwordHash = newPasswordHash
-  saveUsers()
+  await saveUsers()
   return true
 }
 
-export function deleteUser(username: string): boolean {
+export async function deleteUser(username: string): Promise<boolean> {
   const deleted = users.delete(username)
   if (deleted) {
-    saveUsers()
+    await saveUsers()
   }
   return deleted
+}
+
+export async function updateUserRole(username: string, role: 'admin' | 'user'): Promise<boolean> {
+  const user = users.get(username)
+  if (!user) return false
+  user.role = role
+  await saveUsers()
+  return true
+}
+
+export async function incrementTokenVersion(username: string): Promise<boolean> {
+  const user = users.get(username)
+  if (!user) return false
+  user.tokenVersion = (user.tokenVersion || 0) + 1
+  await saveUsers()
+  return true
+}
+
+export function getTokenVersion(username: string): number {
+  return users.get(username)?.tokenVersion ?? -1
 }
 
 export { saveUsers }
@@ -100,7 +145,7 @@ export { saveUsers }
 async function authPlugin(fastify: FastifyInstance) {
   fastify.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
     const urlPath = request.url.split('?')[0]
-    if (WHITELIST_PATHS.some(p => urlPath === p)) {
+    if (WHITELIST_PATHS.some((p) => urlPath === p)) {
       return
     }
 
@@ -112,6 +157,11 @@ async function authPlugin(fastify: FastifyInstance) {
     const token = authHeader.slice(7)
     try {
       const decoded = jwt.verify(token, getConfig().JWT_SECRET) as JwtPayload
+      // Verify tokenVersion matches current user record
+      const currentVersion = getTokenVersion(decoded.username)
+      if (currentVersion !== -1 && decoded.tokenVersion !== currentVersion) {
+        return reply.code(401).send({ error: 'Token revoked' })
+      }
       request.user = decoded
     } catch {
       return reply.code(401).send({ error: 'Invalid or expired token' })

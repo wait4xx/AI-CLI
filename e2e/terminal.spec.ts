@@ -9,8 +9,10 @@ const ADMIN_USER = 'admin'
 const ADMIN_PASS = 'admin123456'
 
 /** 辅助：获取管理员 token */
-async function getAdminToken(request: import('@playwright/test').APIRequestContext): Promise<string> {
-  const res = await request.post('http://localhost:3000/api/auth/login', {
+async function getAdminToken(
+  request: import('@playwright/test').APIRequestContext,
+): Promise<string> {
+  const res = await request.post('http://localhost:18333/api/auth/login', {
     data: { username: ADMIN_USER, password: ADMIN_PASS },
   })
   const body = await res.json()
@@ -25,7 +27,7 @@ test.describe('WebSocket 终端交互', () => {
   })
 
   test('能建立 WebSocket 终端连接', async () => {
-    const wsUrl = `ws://localhost:3000/ws/terminal?token=${accessToken}`
+    const wsUrl = `ws://localhost:18333/ws/terminal?token=${accessToken}`
     const ws = new WebSocket(wsUrl)
 
     const connected = await new Promise<boolean>((resolve) => {
@@ -39,7 +41,7 @@ test.describe('WebSocket 终端交互', () => {
   })
 
   test('能建立 WebSocket 控制连接', async () => {
-    const wsUrl = `ws://localhost:3000/ws/control?token=${accessToken}`
+    const wsUrl = `ws://localhost:18333/ws/control?token=${accessToken}`
     const ws = new WebSocket(wsUrl)
 
     const connected = await new Promise<boolean>((resolve) => {
@@ -53,7 +55,7 @@ test.describe('WebSocket 终端交互', () => {
   })
 
   test('无效 token 无法保持 WebSocket 连接', async () => {
-    const wsUrl = 'ws://localhost:3000/ws/terminal?token=invalid-token'
+    const wsUrl = 'ws://localhost:18333/ws/terminal?token=invalid-token'
     const ws = new WebSocket(wsUrl)
 
     const result = await new Promise<string>((resolve) => {

@@ -11,8 +11,10 @@ const ADMIN_PASS = 'admin123456'
 const PROJECT_ROOT = '/tmp/e2e-project-root'
 
 /** 辅助：获取管理员 token */
-async function getAdminToken(request: import('@playwright/test').APIRequestContext): Promise<string> {
-  const res = await request.post('http://localhost:3000/api/auth/login', {
+async function getAdminToken(
+  request: import('@playwright/test').APIRequestContext,
+): Promise<string> {
+  const res = await request.post('http://localhost:18333/api/auth/login', {
     data: { username: ADMIN_USER, password: ADMIN_PASS },
   })
   const body = await res.json()
@@ -32,7 +34,7 @@ test.describe('文件系统操作', () => {
   })
 
   test('获取文件目录列表', async ({ request }) => {
-    const res = await request.get('http://localhost:3000/api/fs/tree?path=', {
+    const res = await request.get('http://localhost:18333/api/fs/tree?path=', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     expect(res.ok()).toBeTruthy()
@@ -44,7 +46,7 @@ test.describe('文件系统操作', () => {
   })
 
   test('获取子目录列表', async ({ request }) => {
-    const res = await request.get('http://localhost:3000/api/fs/tree?path=subdir', {
+    const res = await request.get('http://localhost:18333/api/fs/tree?path=subdir', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     expect(res.ok()).toBeTruthy()
@@ -53,7 +55,7 @@ test.describe('文件系统操作', () => {
   })
 
   test('读取文件内容', async ({ request }) => {
-    const res = await request.get('http://localhost:3000/api/fs/file?path=test-read.txt', {
+    const res = await request.get('http://localhost:18333/api/fs/file?path=test-read.txt', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     expect(res.ok()).toBeTruthy()
@@ -64,14 +66,14 @@ test.describe('文件系统操作', () => {
   })
 
   test('读取不存在的文件返回 404', async ({ request }) => {
-    const res = await request.get('http://localhost:3000/api/fs/file?path=nonexistent.txt', {
+    const res = await request.get('http://localhost:18333/api/fs/file?path=nonexistent.txt', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     expect(res.status()).toBe(404)
   })
 
   test('创建/写入新文件', async ({ request }) => {
-    const res = await request.put('http://localhost:3000/api/fs/file', {
+    const res = await request.put('http://localhost:18333/api/fs/file', {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
@@ -87,25 +89,27 @@ test.describe('文件系统操作', () => {
     expect(body.path).toBe('e2e-created.txt')
 
     // 验证文件确实存在
-    expect(fs.readFileSync(path.join(PROJECT_ROOT, 'e2e-created.txt'), 'utf-8')).toBe('created by e2e test')
+    expect(fs.readFileSync(path.join(PROJECT_ROOT, 'e2e-created.txt'), 'utf-8')).toBe(
+      'created by e2e test',
+    )
   })
 
   test('路径穿越检测', async ({ request }) => {
-    const res = await request.get('http://localhost:3000/api/fs/file?path=../../../etc/passwd', {
+    const res = await request.get('http://localhost:18333/api/fs/file?path=../../../etc/passwd', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     expect(res.status()).toBe(403)
   })
 
   test('缺失路径参数返回 400', async ({ request }) => {
-    const res = await request.get('http://localhost:3000/api/fs/file', {
+    const res = await request.get('http://localhost:18333/api/fs/file', {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     expect(res.status()).toBe(400)
   })
 
   test('写入危险文件类型被阻止', async ({ request }) => {
-    const res = await request.put('http://localhost:3000/api/fs/file', {
+    const res = await request.put('http://localhost:18333/api/fs/file', {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',

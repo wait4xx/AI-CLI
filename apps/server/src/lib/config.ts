@@ -3,6 +3,7 @@
  * 使用 zod 在启动时校验所有必需和可选的环境变量，
  * 确保配置错误在启动阶段即被捕获，而非运行时才发现。
  */
+import path from 'path'
 import { z } from 'zod/v4'
 
 const configSchema = z.object({
@@ -12,13 +13,20 @@ const configSchema = z.object({
 
   // ─── 可选（带默认值）───
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  PORT: z.coerce.number().int().min(1).max(65535).default(18333),
   PROJECT_ROOT: z.string().default('/workspace'),
   ADMIN_USERNAME: z.string().default('admin'),
-  ADMIN_PASSWORD: z.union([z.string().min(8, 'ADMIN_PASSWORD must be at least 8 characters'), z.literal('')]).optional(),
+  ADMIN_PASSWORD: z
+    .union([z.string().min(8, 'ADMIN_PASSWORD must be at least 8 characters'), z.literal('')])
+    .optional(),
   CORS_ORIGINS: z.string().optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   SHELL_CMD: z.string().default('bash'),
+  DATA_DIR: z.string().default(() => path.join(process.cwd(), 'data')),
+  FS_ALLOW_ABSOLUTE_PATHS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 })
 
 export type AppConfig = z.infer<typeof configSchema>
@@ -30,7 +38,7 @@ export type AppConfig = z.infer<typeof configSchema>
 export function validateConfig(env: Record<string, string | undefined> = process.env): AppConfig {
   const result = configSchema.safeParse(env)
   if (!result.success) {
-    const errors = result.error.issues.map(i => `  ${i.path.join('.')}: ${i.message}`).join('\n')
+    const errors = result.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n')
     throw new Error(`Environment variable validation failed:\n${errors}`)
   }
   return result.data

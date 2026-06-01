@@ -11,6 +11,10 @@ export default {
           border: '#2a2a4a',
         },
       },
+      fontFamily: {
+        sans: ['Inter', 'Smiley Sans', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+        mono: ['JetBrains Mono', 'Menlo', 'Consolas', 'monospace'],
+      },
     },
   },
   plugins: [],

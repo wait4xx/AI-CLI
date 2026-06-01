@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Smiley Sans';
+  src: url('/fonts/SmileySans-Oblique.ttf.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 * {
   -webkit-tap-highlight-color: transparent;
 }
@@ -16,6 +24,7 @@ html, body {
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+  font-family: 'Inter', 'Smiley Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 
 #root {
@@ -27,4 +36,57 @@ html, body {
 .xterm {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* xterm 滚动条：始终显示滑块，可拖拽 */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+  min-height: 30px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+/* 通用滚动条自动隐藏：不滚动时隐藏，hover/滚动时淡入 */
+.auto-hide-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.auto-hide-scrollbar:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.auto-hide-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.auto-hide-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.auto-hide-scrollbar::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+.auto-hide-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* CodeMirror 编辑器滚动条自动隐藏 */
+.cm-scroller::-webkit-scrollbar {
+  width: 6px;
+}
+.cm-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+.cm-scroller::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+}
+.cm-scroller:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
 }

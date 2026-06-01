@@ -4,7 +4,7 @@ import { pinoLogger } from '../lib/logger.js'
 import { getConfig } from '../lib/config.js'
 
 function getAuditLogPath(): string {
-  return path.join(getConfig().PROJECT_ROOT, '.audit.log')
+  return path.join(getConfig().DATA_DIR, 'audit.log')
 }
 
 export type AuditEvent =
@@ -22,8 +22,16 @@ export type AuditEvent =
   | 'USER_CREATE'
   | 'USER_DELETE'
   | 'USER_PASSWORD_CHANGE'
+  | 'USER_ROLE_CHANGE'
   | 'TMUX_KILL'
   | 'TMUX_RENAME'
+  | 'FILE_DELETE'
+  | 'MKDIR'
+  | 'FILE_RENAME'
+  | 'FILE_CREATE'
+  | 'FILE_UPLOAD'
+  | 'FILE_UPLOAD_DANGEROUS_EXT'
+  | 'FILE_COMPRESS'
 
 // [S6修复] 使用 createWriteStream 异步写入，避免 appendFileSync 阻塞事件循环
 let stream: WriteStream | null = null

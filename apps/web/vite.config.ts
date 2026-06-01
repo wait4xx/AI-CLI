@@ -30,34 +30,32 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-webgl', '@xterm/addon-canvas', '@xterm/addon-web-links'],
-          'codemirror': ['@uiw/react-codemirror', '@codemirror/lang-javascript', '@codemirror/lang-python', '@codemirror/lang-json', '@codemirror/lang-markdown', '@codemirror/lang-css', '@codemirror/lang-html'],
+          xterm: [
+            '@xterm/xterm',
+            '@xterm/addon-fit',
+            '@xterm/addon-webgl',
+            '@xterm/addon-canvas',
+            '@xterm/addon-web-links',
+          ],
+          codemirror: [
+            '@uiw/react-codemirror',
+            '@codemirror/lang-javascript',
+            '@codemirror/lang-python',
+            '@codemirror/lang-json',
+            '@codemirror/lang-markdown',
+            '@codemirror/lang-css',
+            '@codemirror/lang-html',
+          ],
           'vendor-react': ['react', 'react-dom'],
         },
       },
     },
   },
   server: {
-    headers: process.env.NODE_ENV === 'production'
-      ? {
-          'Content-Security-Policy': [
-            "default-src 'self'",
-            "script-src 'self'",
-            "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: blob:",
-            "connect-src 'self' ws: wss:",
-            "font-src 'self' data:",
-            "object-src 'none'",
-            "frame-ancestors 'none'",
-            "base-uri 'self'",
-            "form-action 'self'",
-          ].join('; '),
-        }
-      : {},
     proxy: {
-      '/api': 'http://localhost:3000',
+      '/api': 'http://localhost:18333',
       '/ws': {
-        target: 'ws://localhost:3000',
+        target: 'ws://localhost:18333',
         ws: true,
       },
     },

@@ -1,12 +1,15 @@
 import { useMemo } from 'react'
 import { useSessionStore } from '../store/sessionStore'
+import { isMobile } from '../lib/device'
 
 interface QuickActionsPanelProps {
   onAction: (payload: string) => void
 }
 
-// Adapter-specific quick actions (mirrors server-side adapter definitions)
-const ADAPTER_ACTIONS: Record<string, Array<{ label: string; payload: string; variant: string }>> = {
+const FALLBACK_ACTIONS: Record<
+  string,
+  Array<{ label: string; payload: string; variant: string }>
+> = {
   claude: [
     { label: '✓ Approve', payload: '\r', variant: 'approve' },
     { label: '✗ Deny', payload: 'n\r', variant: 'deny' },
@@ -17,12 +20,29 @@ const ADAPTER_ACTIONS: Record<string, Array<{ label: string; payload: string; va
     { label: '✗ Reject', payload: 'n\r', variant: 'deny' },
     { label: '⏼ Cancel', payload: '\x03', variant: 'cancel' },
   ],
-  shell: [
-    { label: '⏼ Cancel', payload: '\x03', variant: 'cancel' },
-  ],
+  shell: [{ label: '⏼ Cancel', payload: '\x03', variant: 'cancel' }],
 }
 
-const DEFAULT_ACTIONS = ADAPTER_ACTIONS.claude
+function variantForLabel(label: string): string {
+  const l = label.toLowerCase()
+  if (
+    l.includes('y') ||
+    l.includes('approve') ||
+    l.includes('apply') ||
+    l.includes('yes') ||
+    l.includes('allow')
+  )
+    return 'approve'
+  if (
+    l.includes('n') ||
+    l.includes('deny') ||
+    l.includes('reject') ||
+    l.includes('no') ||
+    l.includes('skip')
+  )
+    return 'deny'
+  return 'cancel'
+}
 
 const variantStyles: Record<string, string> = {
   approve: 'bg-green-600 hover:bg-green-500 active:bg-green-700 text-white',
@@ -32,8 +52,22 @@ const variantStyles: Record<string, string> = {
 
 export function QuickActionsPanel({ onAction }: QuickActionsPanelProps) {
   const visible = useSessionStore((s) => s.agentStatus === 'WAITING_APPROVAL')
+  const approvalOptions = useSessionStore((s) => s.approvalOptions)
   const activeAdapter = useSessionStore((s) => s.activeAdapter)
-  const actions = useMemo(() => ADAPTER_ACTIONS[activeAdapter] ?? DEFAULT_ACTIONS, [activeAdapter])
+  const mobile = useMemo(() => isMobile(), [])
+
+  if (!mobile) return null
+
+  const actions = useMemo(() => {
+    if (approvalOptions && approvalOptions.length > 0) {
+      return approvalOptions.map((opt) => ({
+        label: opt.label,
+        payload: opt.payload,
+        variant: variantForLabel(opt.label),
+      }))
+    }
+    return FALLBACK_ACTIONS[activeAdapter] ?? FALLBACK_ACTIONS.claude
+  }, [approvalOptions, activeAdapter])
 
   return (
     <div
