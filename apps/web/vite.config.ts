@@ -2,14 +2,32 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
+
+// Read .env from monorepo root (bypasses shell env vars)
+const rootEnvPath = resolve(__dirname, '../../.env')
+const rootEnv = Object.fromEntries(
+  readFileSync(rootEnvPath, 'utf8')
+    .split('\n')
+    .filter((l) => l && !l.startsWith('#'))
+    .map((l) => {
+      const i = l.indexOf('=')
+      return [l.slice(0, i), l.slice(i + 1)]
+    }),
+)
 
 export default defineConfig({
+  envDir: '../../',
+  define: {
+    'import.meta.env.VITE_WS_URL': JSON.stringify(rootEnv.VITE_WS_URL || ''),
+  },
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {
-        name: 'AI-CLI-Mobile',
+        name: 'AI-CLI',
         short_name: 'AI-CLI',
         description: 'Mobile AI Programming CLI Gateway',
         theme_color: '#1a1a2e',
@@ -30,13 +48,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          xterm: [
-            '@xterm/xterm',
-            '@xterm/addon-fit',
-            '@xterm/addon-webgl',
-            '@xterm/addon-canvas',
-            '@xterm/addon-web-links',
-          ],
+          xterm: ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links'],
           codemirror: [
             '@uiw/react-codemirror',
             '@codemirror/lang-javascript',
@@ -53,9 +65,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:18333',
+      '/api': `http://localhost:${rootEnv.PORT || 18333}`,
       '/ws': {
-        target: 'ws://localhost:18333',
+        target: `ws://localhost:${rootEnv.PORT || 18333}`,
         ws: true,
       },
     },

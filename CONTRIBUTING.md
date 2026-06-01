@@ -1,4 +1,4 @@
-# Contributing to AI-CLI-Mobile
+# Contributing to AI-CLI
 
 Thanks for your interest in contributing! This guide covers everything you need to get started.
 
@@ -18,8 +18,8 @@ Thanks for your interest in contributing! This guide covers everything you need 
 **Prerequisites:** Node.js 20+, pnpm 8+, tmux 3.3+
 
 ```bash
-git clone https://github.com/wait4xx/AI-CLI-Mobile.git
-cd AI-CLI-Mobile
+git clone https://github.com/wait4xx/AI-CLI.git
+cd AI-CLI
 pnpm install
 cp .env.example .env
 # Edit .env — set JWT_SECRET, JWT_REFRESH_SECRET (≥32 chars each), ADMIN_PASSWORD (≥8 chars)
@@ -213,7 +213,7 @@ When filing a bug report, please include:
 4. **Environment** — OS, Node.js version, browser/device, deployment method (Docker/dev)
 5. **Logs** — Relevant server logs and browser console output
 
-Use [GitHub Issues](https://github.com/wait4xx/AI-CLI-Mobile/issues) with the appropriate template.
+Use [GitHub Issues](https://github.com/wait4xx/AI-CLI/issues) with the appropriate template.
 
 ## License
 
