@@ -2,20 +2,22 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import { readFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 
-// Read .env from monorepo root (bypasses shell env vars)
+// Read .env from monorepo root (bypasses shell env vars); fall back to empty if missing (e.g. CI)
 const rootEnvPath = resolve(__dirname, '../../.env')
-const rootEnv = Object.fromEntries(
-  readFileSync(rootEnvPath, 'utf8')
-    .split('\n')
-    .filter((l) => l && !l.startsWith('#'))
-    .map((l) => {
-      const i = l.indexOf('=')
-      return [l.slice(0, i), l.slice(i + 1)]
-    }),
-)
+const rootEnv = existsSync(rootEnvPath)
+  ? Object.fromEntries(
+      readFileSync(rootEnvPath, 'utf8')
+        .split('\n')
+        .filter((l) => l && !l.startsWith('#'))
+        .map((l) => {
+          const i = l.indexOf('=')
+          return [l.slice(0, i), l.slice(i + 1)]
+        }),
+    )
+  : {}
 
 export default defineConfig({
   envDir: '../../',

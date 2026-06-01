@@ -67,7 +67,7 @@ cp .env.example .env          # 配置环境变量
 pnpm dev                      # 启动开发服务器
 ```
 
-打开 **http://localhost:5173**，使用 `.env` 中的管理员账号密码登录。
+打开 `http://localhost:5173`，使用 `.env` 中的管理员账号密码登录。
 
 > 本地开发模式下，终端和文件浏览器直接操作物理机的文件系统。建议将 `.env` 中的 `PROJECT_ROOT` 设置为你常用的项目目录（默认为 `/workspace`），设为 `/` 可访问整个文件系统（受限于运行用户的系统权限）：
 >
@@ -297,7 +297,7 @@ cd apps/server && pnpm test
 
 ## API 文档
 
-启动服务后访问 **http://localhost:18333/docs** 查看 Swagger UI，包含完整的请求/响应 Schema。
+启动服务后访问 `http://localhost:18333/docs` 查看 Swagger UI，包含完整的请求/响应 Schema。
 
 <details>
 <summary>📋 完整 API 端点列表</summary>

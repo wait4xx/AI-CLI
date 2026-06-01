@@ -63,7 +63,7 @@ cp .env.example .env          # Configure environment
 pnpm dev                      # Start dev server
 ```
 
-Open **http://localhost:5173** and log in with the admin credentials from your `.env`.
+Open `http://localhost:5173` and log in with the admin credentials from your `.env`.
 
 > In local dev mode, the terminal and file explorer operate directly on your physical machine's filesystem. It's recommended to set `PROJECT_ROOT` in `.env` to your common project directory (default is `/workspace`), set to `/` to access the entire filesystem (subject to the user's system permissions):
 >
@@ -293,7 +293,7 @@ cd apps/server && pnpm test
 
 ## API Documentation
 
-Start the server and visit **http://localhost:18333/docs** for Swagger UI with full request/response schemas.
+Start the server and visit `http://localhost:18333/docs` for Swagger UI with full request/response schemas.
 
 <details>
 <summary>📋 Full API Endpoint List</summary>
