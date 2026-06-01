@@ -6,9 +6,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
-      - '${PORT:-18333}:3000'
+      - '${PORT:-18333}:18333'
     environment:
-      - PORT=3000
+      - PORT=18333
       - JWT_SECRET=${JWT_SECRET}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
       - PROJECT_ROOT=/workspace
@@ -50,10 +50,10 @@ services:
       dockerfile: docker/Dockerfile
       target: deps
     ports:
-      - '${PORT:-18333}:3000'
+      - '${PORT:-18333}:18333'
     # ⚠️ 以下使用 .env 文件中的变量，严禁硬编码实际密钥！
     environment:
-      - PORT=3000
+      - PORT=18333
       - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me-min-32-chars!!}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-dev-refresh-change-me-min-32-chars!!}
       - PROJECT_ROOT=/workspace
