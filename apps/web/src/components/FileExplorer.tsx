@@ -70,7 +70,7 @@ function buildBreadcrumbs(path: string): { label: string; path: string }[] {
 
 export function FileExplorer({
   onFileSelect,
-  onFileOpenInNewTab,
+  _onFileOpenInNewTab,
   onFileOpenInSplit,
 }: FileExplorerProps) {
   const [open, setOpen] = useState(false)
