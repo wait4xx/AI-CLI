@@ -190,7 +190,7 @@ sequenceDiagram
 | 层级     | 技术                                                                                 |
 | -------- | ------------------------------------------------------------------------------------ |
 | 后端     | Node.js 22、Fastify 5、node-pty、tmux、zod                                           |
-| 前端     | React 18、Vite 5、xterm.js（DOM 渲染器 + 自定义 tmux 滚动条）、CodeMirror 6、Zustand |
+| 前端     | React 18、Vite 8、xterm.js（DOM 渲染器 + 自定义 tmux 滚动条）、CodeMirror 6、Zustand |
 | 认证     | JWT 双 token（access 15 分钟 + refresh 7 天）、bcrypt                                |
 | 移动端   | 自定义键盘适配器（IME/CJK）、手势处理（捏合缩放、长按粘贴）                          |
 | 基础设施 | Docker 多阶段构建、seccomp、GitHub Actions CI/CD                                     |

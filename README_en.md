@@ -186,7 +186,7 @@ Close codes: `4001` = auth failed (triggers token refresh), `4002` = protocol mi
 | Layer    | Technology                                                                               |
 | -------- | ---------------------------------------------------------------------------------------- |
 | Backend  | Node.js 22, Fastify 5, node-pty, tmux, zod                                               |
-| Frontend | React 18, Vite 5, xterm.js (DOM renderer + custom tmux scrollbar), CodeMirror 6, Zustand |
+| Frontend | React 18, Vite 8, xterm.js (DOM renderer + custom tmux scrollbar), CodeMirror 6, Zustand |
 | Auth     | JWT dual-token (access 15m + refresh 7d), bcrypt                                         |
 | Mobile   | Custom keyboard adapter (IME/CJK), gesture handler (pinch zoom, long-press paste)        |
 | Infra    | Docker multi-stage build, seccomp, GitHub Actions CI/CD                                  |
