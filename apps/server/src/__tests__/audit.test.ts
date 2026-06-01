@@ -5,6 +5,7 @@ import path from 'path'
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long'
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-at-least-32-characters'
 process.env.PROJECT_ROOT = '/tmp/ai-cli-audit-test'
+process.env.DATA_DIR = '/tmp/ai-cli-audit-test'
 
 const TEST_DIR = '/tmp/ai-cli-audit-test'
 
@@ -38,7 +39,7 @@ describe('AuditLog', () => {
     auditLog('LOGIN', 'user-1', { ip: '127.0.0.1' })
 
     // Wait a bit for the stream to flush
-    const filePath = path.join(TEST_DIR, '.audit.log')
+    const filePath = path.join(TEST_DIR, 'audit.log')
     // Give the write stream time to flush
     return new Promise<void>((resolve) => {
       setTimeout(() => {
@@ -59,7 +60,7 @@ describe('AuditLog', () => {
     auditLog('SESSION_CREATE', 'user-1', { sessionId: 's1' })
     auditLog('SESSION_DESTROY', 'user-1', { sessionId: 's1' })
 
-    const filePath = path.join(TEST_DIR, '.audit.log')
+    const filePath = path.join(TEST_DIR, 'audit.log')
     return new Promise<void>((resolve) => {
       setTimeout(() => {
         const content = fs.readFileSync(filePath, 'utf-8')
@@ -82,7 +83,7 @@ describe('AuditLog', () => {
   it('should handle null userId and details', () => {
     auditLog('WS_CONNECT')
 
-    const filePath = path.join(TEST_DIR, '.audit.log')
+    const filePath = path.join(TEST_DIR, 'audit.log')
     return new Promise<void>((resolve) => {
       setTimeout(() => {
         const content = fs.readFileSync(filePath, 'utf-8')
@@ -101,14 +102,16 @@ describe('AuditLog', () => {
     auditLog('FILE_READ', 'user-1', { path: 'test.txt' })
     const after = new Date().toISOString()
 
-    const filePath = path.join(TEST_DIR, '.audit.log')
+    const filePath = path.join(TEST_DIR, 'audit.log')
     return new Promise<void>((resolve) => {
       setTimeout(() => {
         const content = fs.readFileSync(filePath, 'utf-8')
         const lines = content.trim().split('\n')
         const entry = JSON.parse(lines[lines.length - 1])
         expect(entry.timestamp).toBeDefined()
-        expect(new Date(entry.timestamp).getTime()).toBeGreaterThanOrEqual(new Date(before).getTime())
+        expect(new Date(entry.timestamp).getTime()).toBeGreaterThanOrEqual(
+          new Date(before).getTime(),
+        )
         expect(new Date(entry.timestamp).getTime()).toBeLessThanOrEqual(new Date(after).getTime())
         resolve()
       }, 200)

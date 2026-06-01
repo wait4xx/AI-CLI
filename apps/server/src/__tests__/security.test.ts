@@ -92,8 +92,8 @@ describe('Security', () => {
       query: { path: '/etc/passwd' },
       headers: { authorization: `Bearer ${validToken}` },
     })
-    // Absolute paths are allowed — file browser supports browsing any directory
-    expect([200, 404]).toContain(res.statusCode)
+    // Absolute paths are blocked when FS_ALLOW_ABSOLUTE_PATHS is not enabled
+    expect(res.statusCode).toBe(403)
   })
 
   it('should reject path traversal via tree endpoint', async () => {

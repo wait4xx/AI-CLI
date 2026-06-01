@@ -93,7 +93,7 @@ describe('ShellAdapter', () => {
     const adapter = new ShellAdapter()
     const actions = adapter.getQuickActions()
     expect(actions.length).toBeGreaterThan(0)
-    expect(actions[0].label).toBe('Cancel')
+    expect(actions.map((a) => a.label)).toContain('Cancel')
   })
 
   it('should not support structured output', () => {

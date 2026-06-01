@@ -18,14 +18,17 @@ describe('Config Validation (M14)', () => {
   })
 
   it('should fail when JWT_SECRET is missing', () => {
-    expect(() =>
-      validateConfig({ JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-32' }),
-    ).toThrow('Environment variable validation failed')
+    expect(() => validateConfig({ JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-32' })).toThrow(
+      'Environment variable validation failed',
+    )
   })
 
   it('should fail when JWT_SECRET is too short', () => {
     expect(() =>
-      validateConfig({ JWT_SECRET: 'short', JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-32-characters-long' }),
+      validateConfig({
+        JWT_SECRET: 'short',
+        JWT_REFRESH_SECRET: 'test-refresh-secret-at-least-32-characters-long',
+      }),
     ).toThrow('at least 32')
   })
 
@@ -38,7 +41,7 @@ describe('Config Validation (M14)', () => {
   it('should use default values for optional vars', () => {
     const config = validateConfig(baseEnv)
     expect(config.NODE_ENV).toBe('development')
-    expect(config.PORT).toBe(3000)
+    expect(config.PORT).toBe(18333)
     expect(config.PROJECT_ROOT).toBe('/workspace')
     expect(config.ADMIN_USERNAME).toBe('admin')
     expect(config.LOG_LEVEL).toBe('info')
@@ -52,15 +55,11 @@ describe('Config Validation (M14)', () => {
   })
 
   it('should reject PORT out of range', () => {
-    expect(() =>
-      validateConfig({ ...baseEnv, PORT: '99999' }),
-    ).toThrow()
+    expect(() => validateConfig({ ...baseEnv, PORT: '99999' })).toThrow()
   })
 
   it('should reject invalid NODE_ENV', () => {
-    expect(() =>
-      validateConfig({ ...baseEnv, NODE_ENV: 'staging' }),
-    ).toThrow()
+    expect(() => validateConfig({ ...baseEnv, NODE_ENV: 'staging' })).toThrow()
   })
 
   it('should accept valid NODE_ENV values', () => {

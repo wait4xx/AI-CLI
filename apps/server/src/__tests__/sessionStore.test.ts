@@ -5,6 +5,7 @@ import path from 'path'
 process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long'
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-at-least-32-characters'
 process.env.PROJECT_ROOT = '/tmp/ai-cli-sessionstore-test'
+process.env.DATA_DIR = '/tmp/ai-cli-sessionstore-test'
 
 import { SessionStore } from '../core/sessionStore.js'
 
@@ -21,8 +22,8 @@ describe('SessionStore', () => {
     store = new SessionStore()
   })
 
-  afterEach(() => {
-    store.flush()
+  afterEach(async () => {
+    await store.flush()
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true })
     }
@@ -121,13 +122,13 @@ describe('SessionStore', () => {
       store.set('e2', data2)
       const entries = [...store.entries()]
       expect(entries).toHaveLength(2)
-      expect(entries.map(e => e[0])).toContain('e1')
-      expect(entries.map(e => e[0])).toContain('e2')
+      expect(entries.map((e) => e[0])).toContain('e1')
+      expect(entries.map((e) => e[0])).toContain('e2')
     })
   })
 
   describe('persistence', () => {
-    it('should persist data to file', () => {
+    it('should persist data to file', async () => {
       const data = {
         sessionId: 'persist-1',
         adapterName: 'claude',
@@ -138,10 +139,10 @@ describe('SessionStore', () => {
         lastActive: new Date().toISOString(),
       }
       store.set('persist-1', data)
-      store.flush()
+      await store.flush()
 
       // Verify file was created
-      const filePath = path.join(testDir, '.sessions.json')
+      const filePath = path.join(testDir, 'sessions.json')
       expect(fs.existsSync(filePath)).toBe(true)
 
       // Verify content
@@ -150,7 +151,7 @@ describe('SessionStore', () => {
       expect(raw['persist-1'].adapterName).toBe('claude')
     })
 
-    it('should load persisted data', () => {
+    it('should load persisted data', async () => {
       const data = {
         sessionId: 'load-1',
         adapterName: 'shell',
@@ -161,22 +162,22 @@ describe('SessionStore', () => {
         lastActive: new Date().toISOString(),
       }
       store.set('load-1', data)
-      store.flush()
+      await store.flush()
 
       // Create a new store and load
       const store2 = new SessionStore()
-      store2.load()
+      await store2.load()
       expect(store2.get('load-1')).toBeDefined()
       expect(store2.get('load-1')?.adapterName).toBe('shell')
     })
 
-    it('should handle corrupted file gracefully', () => {
-      const filePath = path.join(testDir, '.sessions.json')
+    it('should handle corrupted file gracefully', async () => {
+      const filePath = path.join(testDir, 'sessions.json')
       fs.writeFileSync(filePath, '{ invalid json', 'utf-8')
 
       // Should not throw
       const store2 = new SessionStore()
-      store2.load()
+      await store2.load()
       expect(store2.get('anything')).toBeUndefined()
     })
   })

@@ -23,6 +23,7 @@ const mockSessionManager = {
   getRecordingStatus: vi.fn(() => ({ recording: false, duration: 0 })),
   getRecording: vi.fn(() => []),
   getSessionIds: vi.fn(() => []),
+  getSessionPermission: vi.fn(() => null),
   destroy: vi.fn(),
 }
 
@@ -120,6 +121,7 @@ describe('WSGateway', () => {
     }))
     mockSessionManager.getRecording.mockImplementation(() => [])
     mockSessionManager.getSessionIds.mockImplementation(() => [])
+    mockSessionManager.getSessionPermission.mockImplementation(() => null)
     mockSessionManager.destroy.mockImplementation(() => {})
     vi.useFakeTimers()
     gateway = new WSGateway(mockSessionManager as any, JWT_SECRET, JWT_REFRESH_SECRET)

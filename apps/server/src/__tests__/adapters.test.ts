@@ -14,7 +14,9 @@ vi.mock('../lib/config.js', () => {
       ADMIN_USERNAME: 'admin',
       LOG_LEVEL: 'info',
     }),
-    _setShellCmd: (cmd: string) => { shellCmd = cmd },
+    _setShellCmd: (cmd: string) => {
+      shellCmd = cmd
+    },
   }
 })
 
@@ -82,23 +84,28 @@ describe('ClaudeCodeAdapter', () => {
 
   describe('parseScreenSnapshot', () => {
     it('should detect WAITING_APPROVAL on screen', () => {
-      expect(adapter.parseScreenSnapshot('Approve this action?')).toBe('WAITING_APPROVAL')
+      expect(adapter.parseScreenSnapshot('Approve this action?')).toEqual({
+        status: 'WAITING_APPROVAL',
+        options: undefined,
+      })
     })
 
     it('should detect RUNNING with spinner chars', () => {
-      expect(adapter.parseScreenSnapshot('⠋ Processing...')).toBe('RUNNING')
+      expect(adapter.parseScreenSnapshot('⠋ Processing...')).toEqual({ status: 'RUNNING' })
     })
 
     it('should detect RUNNING with "Thinking"', () => {
-      expect(adapter.parseScreenSnapshot('Thinking about the problem')).toBe('RUNNING')
+      expect(adapter.parseScreenSnapshot('Thinking about the problem')).toEqual({
+        status: 'RUNNING',
+      })
     })
 
     it('should detect IDLE with prompt', () => {
-      expect(adapter.parseScreenSnapshot('user@host:~$ ')).toBe('IDLE')
+      expect(adapter.parseScreenSnapshot('user@host:~$ ')).toEqual({ status: 'IDLE' })
     })
 
-    it('should return null for empty screen', () => {
-      expect(adapter.parseScreenSnapshot('')).toBeNull()
+    it('should return { status: null } for empty screen', () => {
+      expect(adapter.parseScreenSnapshot('')).toEqual({ status: null })
     })
   })
 
@@ -106,11 +113,11 @@ describe('ClaudeCodeAdapter', () => {
     it('should return Approve, Deny, Cancel actions', () => {
       const actions = adapter.getQuickActions()
       expect(actions).toHaveLength(3)
-      expect(actions.map(a => a.label)).toEqual(['Approve', 'Deny', 'Cancel'])
+      expect(actions.map((a) => a.label)).toEqual(['Approve', 'Deny', 'Cancel'])
     })
 
     it('should have Enter for Approve', () => {
-      const approve = adapter.getQuickActions().find(a => a.label === 'Approve')
+      const approve = adapter.getQuickActions().find((a) => a.label === 'Approve')
       expect(approve!.payload).toBe('\r')
     })
   })
@@ -165,7 +172,7 @@ describe('AiderAdapter', () => {
     it('should return Apply, Reject, Cancel actions', () => {
       const actions = adapter.getQuickActions()
       expect(actions).toHaveLength(3)
-      expect(actions.map(a => a.label)).toEqual(['Apply', 'Reject', 'Cancel'])
+      expect(actions.map((a) => a.label)).toEqual(['Apply', 'Reject', 'Cancel'])
     })
   })
 })
@@ -194,11 +201,10 @@ describe('ShellAdapter', () => {
     expect(adapter.parseScreenSnapshot('anything')).toBeNull()
   })
 
-  it('should have Cancel quick action', () => {
+  it('should have quick actions', () => {
     const adapter = new ShellAdapter()
     const actions = adapter.getQuickActions()
-    expect(actions).toHaveLength(1)
-    expect(actions[0].label).toBe('Cancel')
-    expect(actions[0].payload).toBe('\x03')
+    expect(actions).toHaveLength(3)
+    expect(actions.map((a) => a.label)).toEqual(['Approve', 'Deny', 'Cancel'])
   })
 })
