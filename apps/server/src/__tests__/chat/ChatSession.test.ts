@@ -55,3 +55,37 @@ describe('ChatSession — lifecycle', () => {
     expect(onCrash).toHaveBeenCalledWith(expect.any(Number), expect.any(String))
   })
 })
+
+describe('ChatSession — streaming & backpressure', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('send() writes provider-formatted envelope to stdin', () => {
+    const session = new ChatSession(new ClaudeCodeProvider(), SPAWN_OPTS, () => {})
+    session.start()
+    session.send('hello')
+    const written = mockChild.stdin.write.mock.calls[0][0] as string
+    expect(written.endsWith('\n')).toBe(true)
+    expect(JSON.parse(written).message.content[0].text).toBe('hello')
+  })
+
+  it('parses stdout lines into events via provider', () => {
+    const onEvent = vi.fn()
+    const session = new ChatSession(new ClaudeCodeProvider(), SPAWN_OPTS, onEvent)
+    session.start()
+    const dataHandler = mockChild.stdout.on.mock.calls.find((c) => c[0] === 'data')![1]
+    dataHandler(JSON.stringify({ type: 'result', subtype: 'success' }) + '\n')
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'done' }))
+  })
+
+  it('send() returns false when not started', () => {
+    const session = new ChatSession(new ClaudeCodeProvider(), SPAWN_OPTS, () => {})
+    expect(session.send('x')).toBe(false)
+  })
+
+  it('send() rejects oversized payload (>256KB)', () => {
+    const session = new ChatSession(new ClaudeCodeProvider(), SPAWN_OPTS, () => {})
+    session.start()
+    expect(session.send('x'.repeat(257 * 1024))).toBe(false)
+    expect(mockChild.stdin.write).not.toHaveBeenCalled()
+  })
+})
