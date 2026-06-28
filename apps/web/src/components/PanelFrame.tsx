@@ -15,8 +15,11 @@ export function PanelFrame({ panelId, panelType, children }: PanelFrameProps) {
   const terminalSessions = useSessionStore((s) => s.terminalSessions)
   const sessions = useSessionStore((s) => s.sessions)
   const activePanelId = useSessionStore((s) => s.activePanelId)
-  const { removePanel, setActiveFile, removeFileFromPanel, splitPanel, setActivePanelId } =
-    useSessionStore()
+  const removePanel = useSessionStore((s) => s.removePanel)
+  const setActiveFile = useSessionStore((s) => s.setActiveFile)
+  const removeFileFromPanel = useSessionStore((s) => s.removeFileFromPanel)
+  const splitPanel = useSessionStore((s) => s.splitPanel)
+  const setActivePanelId = useSessionStore((s) => s.setActivePanelId)
 
   const isDark = theme === 'dark'
   const border = isDark ? 'border-[#292e42]' : 'border-[#e0e0e0]'

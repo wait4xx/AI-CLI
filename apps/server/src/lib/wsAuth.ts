@@ -31,7 +31,7 @@ export function verifyWsUpgradeToken(
   }
 
   try {
-    const decoded = jwt.verify(token, secret) as JwtPayload
+    const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] }) as JwtPayload
     const currentVersion = getTokenVersion(decoded.username)
     if (currentVersion !== -1 && decoded.tokenVersion !== currentVersion) {
       pinoLogger.warn(`${channelName} WS upgrade rejected — token revoked`)

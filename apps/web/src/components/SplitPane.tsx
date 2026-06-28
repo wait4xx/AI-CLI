@@ -8,6 +8,7 @@ const CodeEditor = lazy(() => import('./CodeEditor').then((m) => ({ default: m.C
 const TerminalContainer = lazy(() =>
   import('./TerminalContainer').then((m) => ({ default: m.TerminalContainer })),
 )
+const ChatView = lazy(() => import('./chat/ChatView').then((m) => ({ default: m.ChatView })))
 
 interface SplitPaneProps {
   node: SplitNode
@@ -239,10 +240,54 @@ function PanelContent({
 // Tab clicks assign sessions to the focused panel via activePanelId.
 function TerminalPanel({ panelId }: { panelId: string }) {
   const sessionId = useSessionStore((s) => s.terminalSessions[panelId])
+  const conversation = useSessionStore((s) => s.conversation)
+
+  // The panel pinned in `conversation.panelId` hosts the hybrid chat: ChatView
+  // stays mounted (keeping its /ws/chat connection alive across view switches),
+  // toggling visibility with viewMode. Switching to terminal kills the
+  // server-side chat process; the persistent WS lets us send CHAT_SWITCH_VIEW
+  // back to respawn it.
+  if (conversation && conversation.panelId === panelId) {
+    const inChat = conversation.viewMode === 'chat'
+    return (
+      <div className="absolute inset-0">
+        <div className={inChat ? 'h-full' : 'hidden'}>
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                Loading chat…
+              </div>
+            }
+          >
+            <ChatView />
+          </Suspense>
+        </div>
+        {!inChat && (
+          <div className="absolute inset-0 flex flex-col">
+            <button
+              onClick={() => useSessionStore.getState().chatSwitchView?.('chat')}
+              className="shrink-0 border-b border-[#292e42] bg-blue-600/20 px-3 py-1.5 text-left text-xs text-blue-300 hover:bg-blue-600/30"
+            >
+              ← 返回对话
+            </button>
+            <div className="relative min-h-0 flex-1">
+              {sessionId ? (
+                <TerminalContainer panelId={panelId} />
+              ) : (
+                <div className="flex h-full items-center justify-center text-sm text-gray-500 select-none">
+                  Click a tab to assign terminal
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   if (!sessionId) {
     return (
-      <div className="h-full flex items-center justify-center text-gray-500 text-sm select-none">
+      <div className="flex h-full items-center justify-center text-sm text-gray-500 select-none">
         Click a tab to assign terminal
       </div>
     )

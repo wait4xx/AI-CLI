@@ -26,6 +26,10 @@ import { validateConfig } from './lib/config.js'
 import { WSGateway } from './core/WSGateway.js'
 import { FileWatcher } from './core/FileWatcher.js'
 import { closeAuditLog } from './core/audit.js'
+import { ConversationManager } from './chat/ConversationManager.js'
+import { ChatGateway } from './chat/ChatGateway.js'
+import { ClaudeCodeProvider } from './chat/ClaudeCodeProvider.js'
+import { chatRoutes } from './routes/chat.js'
 
 const fastify = Fastify({ loggerInstance: pinoLogger })
 let serverStarted = false
@@ -137,6 +141,17 @@ async function start() {
   fastify.decorate('wsGateway', wsGateway)
   fastify.decorate('sessionManager', sessionManager)
 
+  // Chat Gateway — WebSocket handler for /ws/chat
+  const conversationManager = new ConversationManager()
+  conversationManager.registerProvider(new ClaudeCodeProvider())
+  const chatGateway = new ChatGateway(
+    conversationManager,
+    config.JWT_SECRET,
+    config.JWT_REFRESH_SECRET,
+  )
+  fastify.decorate('chatGateway', chatGateway)
+  fastify.decorate('conversationManager', conversationManager)
+
   // File watcher — broadcast changes to control WS clients
   fileWatcher = new FileWatcher()
   fileWatcher.start((event) => wsGateway.broadcastFileChange(event))
@@ -144,6 +159,7 @@ async function start() {
   // WS Routes (registered after gateway is attached)
   await fastify.register(terminalRoutes)
   await fastify.register(controlRoutes)
+  await fastify.register(chatRoutes)
   await fastify.register(fsRoutes, { prefix: '/api/fs' })
 
   // Serve frontend static files (production only)
@@ -216,6 +232,7 @@ async function shutdown() {
   if (sessionManager) {
     await sessionManager.destroy()
   }
+  if (fastify.conversationManager) fastify.conversationManager.destroyAll()
   // Flush and close audit log stream (awaits completion)
   await closeAuditLog()
   if (serverStarted) {

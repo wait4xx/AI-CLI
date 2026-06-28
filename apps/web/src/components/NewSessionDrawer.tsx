@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { Drawer } from 'vaul'
-import { Plus, Terminal, Monitor, Loader2, RefreshCw, Folder } from 'lucide-react'
+import { Plus, Terminal, Monitor, Loader2, RefreshCw, Folder, MessageSquare } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
 import { useUiTheme } from '../hooks/useUiTheme'
 
@@ -109,6 +109,12 @@ export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) 
     onOpenChange(false)
   }, [onOpenChange, cwd, selectedAdapter])
 
+  const handleNewConversation = useCallback(() => {
+    const claudeSessionId = crypto.randomUUID()
+    useSessionStore.getState().startConversation(claudeSessionId, cwd || '')
+    onOpenChange(false)
+  }, [onOpenChange, cwd])
+
   const handleAttachTmux = useCallback(
     (tmuxName: string) => {
       const newId = crypto.randomUUID()
@@ -151,6 +157,9 @@ export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) 
 
             <div className="px-4 pb-3 shrink-0">
               <Drawer.Title className={`${ui.text} text-sm font-medium`}>New Session</Drawer.Title>
+              <Drawer.Description className="sr-only">
+                Create a new terminal session or Claude conversation
+              </Drawer.Description>
             </div>
 
             <div className="flex-1 overflow-y-auto px-2 pb-4">
@@ -165,6 +174,20 @@ export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) 
                 <div className="flex-1 min-w-0">
                   <p className={`text-sm ${ui.text}`}>New Session</p>
                   {cwd && <p className={`text-xs ${ui.textDim} truncate`}>Start in: {cwd}</p>}
+                </div>
+              </button>
+
+              {/* Claude conversation session (hybrid chat view) */}
+              <button
+                onClick={handleNewConversation}
+                className={`flex items-center gap-3 w-full px-3 py-3 rounded-lg ${ui.hover} ${ui.active} transition-colors text-left mb-1`}
+              >
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-500/20">
+                  <MessageSquare className="h-4 w-4 text-purple-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm ${ui.text}`}>Claude 对话会话</p>
+                  <p className={`truncate text-xs ${ui.textDim}`}>对话视图(可切换终端)</p>
                 </div>
               </button>
 

@@ -649,9 +649,17 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  grantControl(sessionId: string, requestId: string, currentControllerCtrlWs: WebSocket): void {
+  grantControl(sessionId: string, requestId: string, currentControllerCtrlWs: WebSocket): boolean {
     const session = this.sessions.get(sessionId)
-    if (!session) return
+    if (!session) return false
+
+    // Only the current controller may hand off control — otherwise any
+    // connected device (e.g. an observer) could approve a pending request and
+    // seize/redirect control without the controller's consent.
+    const controller = session.controllerDeviceId
+      ? session.devices.get(session.controllerDeviceId)
+      : null
+    if (!controller || controller.ctrlWs !== currentControllerCtrlWs) return false
 
     // Find the requester by matching pendingRequestId
     for (const [id, dev] of session.devices) {
@@ -671,9 +679,10 @@ export class SessionManager extends EventEmitter {
         session.controllerDeviceId = id
         dev.pendingRequestId = undefined
         dev.ctrlWs?.send(JSON.stringify({ type: 'CONTROL_GRANTED', sessionId }))
-        return
+        return true
       }
     }
+    return false
   }
 
   forceTakeControl(sessionId: string, requesterCtrlWs: WebSocket, isAdmin: boolean): void {
@@ -702,9 +711,7 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  getConnectedDevices(
-    sessionId: string,
-  ): Array<{
+  getConnectedDevices(sessionId: string): Array<{
     id: string
     deviceName: string
     username: string

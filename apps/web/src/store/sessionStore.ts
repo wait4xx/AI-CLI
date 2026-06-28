@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { AgentStatus } from '@ai-cli/shared'
+import { AgentStatus, type ChatPermissionTier, type ChatViewMode } from '@ai-cli/shared'
+import {
+  chatReducer,
+  initialChatState,
+  type ChatAction,
+  type ChatRenderState,
+} from '../lib/chatReducer'
 import {
   type SplitNode,
   type SplitDirection,
@@ -15,6 +21,7 @@ import {
   collectPanels,
   genId,
   isContainer,
+  findNode,
   findParentWithIndex,
 } from '../lib/splitLayout'
 
@@ -31,6 +38,15 @@ interface CurrentUser {
   userId: string
   username: string
   role: 'admin' | 'user'
+}
+
+interface Conversation {
+  conversationId: string | null
+  claudeSessionId: string
+  cwd: string
+  viewMode: ChatViewMode
+  tier: ChatPermissionTier
+  panelId: string // which terminal panel hosts this conversation
 }
 
 interface SessionState {
@@ -116,6 +132,17 @@ interface SessionState {
     sessionId: string
   }>
 
+  // Hybrid chat view state
+  conversation: Conversation | null
+  chat: ChatRenderState
+  chatConnected: boolean
+  chatConnectionPhase: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'
+  // Chat WS function refs (set by ChatView), mirroring the terminal WS refs
+  sendChatMessage: ((text: string) => void) | null
+  chatEscalate: ((tier: ChatPermissionTier) => void) | null
+  chatSwitchView: ((mode: ChatViewMode) => void) | null
+  chatReconnect: (() => void) | null
+
   // Actions
   setConnected: (phase: SessionState['connectionPhase']) => void
   setDisconnected: () => void
@@ -160,6 +187,15 @@ interface SessionState {
     sessionId: string
   }) => void
   removeControlRequest: (requestId: string) => void
+
+  // Hybrid chat view actions
+  startConversation: (claudeSessionId: string, cwd: string) => void
+  endConversation: () => void
+  setConversationId: (id: string) => void
+  setChatViewMode: (mode: ChatViewMode) => void
+  setChatTier: (tier: ChatPermissionTier) => void
+  setChatConnected: (phase: SessionState['chatConnectionPhase']) => void
+  applyChatAction: (action: ChatAction) => void
 
   // Split pane actions
   splitPanel: (
@@ -244,6 +280,14 @@ const initialState = {
   observerSessions: {},
   connectedDevices: [],
   controlRequests: [],
+  conversation: null as Conversation | null,
+  chat: initialChatState,
+  chatConnected: false,
+  chatConnectionPhase: 'DISCONNECTED' as const,
+  sendChatMessage: null as ((text: string) => void) | null,
+  chatEscalate: null as ((tier: ChatPermissionTier) => void) | null,
+  chatSwitchView: null as ((mode: ChatViewMode) => void) | null,
+  chatReconnect: null as (() => void) | null,
 }
 
 export const useSessionStore = create<SessionState>()(
@@ -363,6 +407,57 @@ export const useSessionStore = create<SessionState>()(
         set((s) => ({
           controlRequests: s.controlRequests.filter((r) => r.requestId !== requestId),
         })),
+
+      startConversation: (claudeSessionId, cwd) => {
+        // Pin the conversation to a terminal panel: prefer the active panel
+        // when it is a terminal, else the first terminal panel in the layout.
+        // The persisted layout may not contain 'terminal-main' after splits,
+        // so we must not hardcode it.
+        const { splitRoot, activePanelId } = get()
+        const activeNode = findNode(splitRoot, activePanelId)
+        let panelId =
+          activeNode && !isContainer(activeNode) && activeNode.type === 'terminal'
+            ? activePanelId
+            : ''
+        if (!panelId) {
+          const firstTerminal = collectPanels(splitRoot).find((p) => p.type === 'terminal')
+          panelId = firstTerminal?.id ?? activePanelId
+        }
+        set({
+          conversation: {
+            conversationId: null,
+            claudeSessionId,
+            cwd,
+            viewMode: 'chat',
+            tier: 'Explore',
+            panelId,
+          },
+          chat: initialChatState,
+        })
+      },
+
+      endConversation: () =>
+        set({ conversation: null, chat: initialChatState, chatConnected: false }),
+
+      setConversationId: (id) => {
+        const conv = get().conversation
+        if (conv) set({ conversation: { ...conv, conversationId: id } })
+      },
+
+      setChatViewMode: (mode) => {
+        const conv = get().conversation
+        if (conv) set({ conversation: { ...conv, viewMode: mode } })
+      },
+
+      setChatTier: (tier) => {
+        const conv = get().conversation
+        if (conv) set({ conversation: { ...conv, tier } })
+      },
+
+      setChatConnected: (phase) =>
+        set({ chatConnected: phase === 'CONNECTED', chatConnectionPhase: phase }),
+
+      applyChatAction: (action) => set({ chat: chatReducer(get().chat, action) }),
 
       addSession: () => {
         const MAX_SESSIONS = 10

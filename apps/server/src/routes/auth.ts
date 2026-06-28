@@ -466,7 +466,9 @@ export async function authRoutes(fastify: FastifyInstance) {
 
       try {
         const config = getConfig()
-        const decoded = jwt.verify(refreshToken, config.JWT_REFRESH_SECRET) as JwtPayload
+        const decoded = jwt.verify(refreshToken, config.JWT_REFRESH_SECRET, {
+          algorithms: ['HS256'],
+        }) as JwtPayload
         // Verify tokenVersion matches current user record
         const currentVersion = getTokenVersion(decoded.username)
         if (currentVersion !== -1 && decoded.tokenVersion !== currentVersion) {

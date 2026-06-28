@@ -4,7 +4,7 @@ import { X, Plus, Trash2, Shield, User, Key } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
 import { useUiTheme } from '../hooks/useUiTheme'
 
-const { Root, Trigger, Portal, Overlay, Content, Title, Close } = Drawer
+const { Root, Trigger, Portal, Overlay, Content, Title, Description, Close } = Drawer
 
 const API_BASE = import.meta.env.VITE_API_URL || window.location.origin
 
@@ -128,6 +128,9 @@ export function UserManagerDrawer() {
           <div className="mx-auto w-12 h-1.5 rounded-full bg-gray-600 mt-3" />
           <div className="flex items-center justify-between px-4 py-3">
             <Title className={`text-sm font-semibold ${ui.text}`}>User Management</Title>
+            <Description className="sr-only">
+              Create, delete, and manage user accounts and roles
+            </Description>
             <Close asChild>
               <button className={`p-1 ${ui.textMuted} ${ui.hover}`}>
                 <X className="w-4 h-4" />

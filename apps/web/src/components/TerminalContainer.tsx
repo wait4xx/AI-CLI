@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import { useDualChannelWS } from '../hooks/useDualChannelWS'
 import { useAuth } from '../hooks/useAuth'
 import { useSessionStore } from '../store/sessionStore'
@@ -55,7 +57,11 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
     logout,
   )
 
-  const { fontSize, setFontSize, terminalTheme, activeAdapter, tmuxPanes } = useSessionStore()
+  const fontSize = useSessionStore((s) => s.fontSize)
+  const setFontSize = useSessionStore((s) => s.setFontSize)
+  const terminalTheme = useSessionStore((s) => s.terminalTheme)
+  const activeAdapter = useSessionStore((s) => s.activeAdapter)
+  const tmuxPanes = useSessionStore((s) => s.tmuxPanes)
 
   const sessionId = useSessionStore((s) => s.terminalSessions[panelId] ?? null)
   const isObserver = useSessionStore((s) => s.observerSessions[sessionId ?? ''] ?? false)
@@ -127,6 +133,17 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
       term.loadAddon(fitAddon)
       term.loadAddon(new WebLinksAddon())
       term.open(container)
+
+      // Best-effort GPU renderer: try WebGL, fall back to Canvas, then default DOM
+      try {
+        term.loadAddon(new WebglAddon())
+      } catch {
+        try {
+          term.loadAddon(new CanvasAddon())
+        } catch {
+          /* fall back to default DOM renderer */
+        }
+      }
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -421,6 +438,7 @@ export function TerminalContainer({ panelId }: TerminalContainerProps) {
               if (term.cols !== prevCols || term.rows !== prevRows) {
                 sendResize(term.cols, term.rows)
               }
+              term.refresh(0, term.rows - 1)
             } catch {
               /* may fail */
             }

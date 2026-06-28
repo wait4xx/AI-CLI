@@ -491,7 +491,16 @@ export class WSGateway {
       case 'GRANT_CONTROL': {
         const { sessionId, requestId } = msg
         if (!this.validateSessionAccess(ws, sessionId, currentUser)) break
-        this.sessionManager.grantControl(sessionId, requestId, ws)
+        const granted = this.sessionManager.grantControl(sessionId, requestId, ws)
+        if (!granted) {
+          ws.send(
+            JSON.stringify({
+              type: 'ERROR',
+              message: 'Only the current controller can grant control',
+            }),
+          )
+          break
+        }
         this.broadcastDeviceList(sessionId)
         break
       }
