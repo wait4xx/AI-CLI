@@ -16,7 +16,10 @@ const API_BASE = import.meta.env.VITE_API_URL || window.location.origin
 
 export default function App() {
   const { isAuthenticated, login, loadStoredAuth, refreshToken, logout } = useAuth()
-  const { sessionId, setSession, loadSessions, accessToken } = useSessionStore()
+  const sessionId = useSessionStore((s) => s.sessionId)
+  const setSession = useSessionStore((s) => s.setSession)
+  const loadSessions = useSessionStore((s) => s.loadSessions)
+  const accessToken = useSessionStore((s) => s.accessToken)
   const [restoring, setRestoring] = useState(false)
 
   // Diff badge state (global)

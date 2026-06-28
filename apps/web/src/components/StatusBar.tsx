@@ -179,19 +179,17 @@ export const StatusBar = memo(function StatusBar({
 }: {
   actionsSlot?: React.ReactNode
 }) {
-  const {
-    connectionPhase,
-    agentStatus,
-    sessions,
-    activeSessionIndex,
-    uiTheme,
-    setUiTheme,
-    fontSize,
-    editorFontSize,
-    setFontSize,
-    setEditorFontSize,
-    currentUser,
-  } = useSessionStore()
+  const connectionPhase = useSessionStore((s) => s.connectionPhase)
+  const agentStatus = useSessionStore((s) => s.agentStatus)
+  const sessions = useSessionStore((s) => s.sessions)
+  const activeSessionIndex = useSessionStore((s) => s.activeSessionIndex)
+  const uiTheme = useSessionStore((s) => s.uiTheme)
+  const setUiTheme = useSessionStore((s) => s.setUiTheme)
+  const fontSize = useSessionStore((s) => s.fontSize)
+  const editorFontSize = useSessionStore((s) => s.editorFontSize)
+  const setFontSize = useSessionStore((s) => s.setFontSize)
+  const setEditorFontSize = useSessionStore((s) => s.setEditorFontSize)
+  const currentUser = useSessionStore((s) => s.currentUser)
   const ui = useUiTheme()
   const deviceName = useDeviceName()
 
