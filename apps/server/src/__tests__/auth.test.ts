@@ -9,6 +9,7 @@ process.env.JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long'
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-at-least-32-characters'
 process.env.ADMIN_USERNAME = 'admin'
 process.env.ADMIN_PASSWORD = 'testpassword123'
+process.env.DATA_DIR = '/tmp/ai-cli-auth-routes-test'
 
 async function buildServer() {
   const app = Fastify()
@@ -182,7 +183,7 @@ describe('Auth Routes', () => {
       expect(res.statusCode).toBe(403)
 
       // Cleanup
-      deleteUser('regularuser')
+      await deleteUser('regularuser')
     })
 
     it('should reject unauthenticated requests', async () => {
@@ -216,7 +217,7 @@ describe('Auth Routes', () => {
       expect(body.userId).toBeDefined()
 
       // Cleanup
-      deleteUser('newuser')
+      await deleteUser('newuser')
     })
 
     it('should reject duplicate username', async () => {
@@ -423,7 +424,7 @@ describe('Auth Routes', () => {
       expect(newLogin.statusCode).toBe(200)
 
       // Cleanup
-      deleteUser('pwchange')
+      await deleteUser('pwchange')
     })
 
     it('should reject short new password', async () => {
