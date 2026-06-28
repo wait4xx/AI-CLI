@@ -8,6 +8,7 @@ export interface ConversationInit {
   conversationId: string
   claudeSessionId: string
   cwd: string
+  ownerId: string
   initialTier?: ChatPermissionTier
 }
 
@@ -15,6 +16,7 @@ export interface ConversationState {
   conversationId: string
   claudeSessionId: string
   cwd: string
+  ownerId: string
   viewMode: ChatViewMode
   tier: ChatPermissionTier
   messageLog: ChatMessage[]
@@ -33,6 +35,7 @@ export class Conversation extends EventEmitter {
       conversationId: init.conversationId,
       claudeSessionId: init.claudeSessionId,
       cwd: init.cwd,
+      ownerId: init.ownerId,
       viewMode: 'chat',
       tier: init.initialTier ?? 'Explore',
       messageLog: [],

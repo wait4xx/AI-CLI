@@ -8,6 +8,7 @@ export interface CreateConversationOpts {
   providerId: string
   cwd: string
   claudeSessionId: string
+  ownerId: string
   initialTier?: ChatPermissionTier
 }
 
@@ -43,6 +44,7 @@ export class ConversationManager {
       // Fall back to PROJECT_ROOT when the client omits a working directory so
       // headless claude always launches somewhere sensible.
       cwd: opts.cwd || getConfig().PROJECT_ROOT,
+      ownerId: opts.ownerId,
       initialTier: opts.initialTier,
     })
     this.conversations.set(conversationId, conv)

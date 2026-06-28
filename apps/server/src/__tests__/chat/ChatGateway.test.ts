@@ -219,4 +219,81 @@ describe('ChatGateway — review fixes', () => {
     expect(viewChanged).toBeDefined()
     expect(viewChanged!.tier).toBe('Edit')
   })
+
+  it('rejects a non-owner (non-admin) from operating on another user conversation', () => {
+    const { gw } = setup()
+    // owner creates the conversation
+    const ownerWs = fakeWs()
+    gw.handleChatConnection(ownerWs as unknown as WebSocket, USER as never)
+    ownerWs.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '/tmp',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    const convId = (
+      ownerWs.sent.find((m) => (m as { type: string }).type === 'CHAT_CREATED') as {
+        conversationId: string
+      }
+    ).conversationId
+    // a different non-admin user tries to send
+    const otherWs = fakeWs()
+    const OTHER = { ...USER, userId: 'u2', role: 'user' }
+    gw.handleChatConnection(otherWs as unknown as WebSocket, OTHER as never)
+    otherWs.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'CHAT_SEND', conversationId: convId, text: 'hi' })),
+    )
+    expect(
+      otherWs.sent.some(
+        (m) =>
+          (m as { type: string; message?: string }).type === 'CHAT_ERROR' &&
+          /owner/.test((m as { message?: string }).message ?? ''),
+      ),
+    ).toBe(true)
+  })
+
+  it('allows an admin (non-owner) to operate on another user conversation', () => {
+    const { gw } = setup()
+    // a non-admin owner creates
+    const ownerWs = fakeWs()
+    gw.handleChatConnection(
+      ownerWs as unknown as WebSocket,
+      { ...USER, userId: 'owner1', role: 'user' } as never,
+    )
+    ownerWs.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '/tmp',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    const convId = (
+      ownerWs.sent.find((m) => (m as { type: string }).type === 'CHAT_CREATED') as {
+        conversationId: string
+      }
+    ).conversationId
+    // a different admin sends — admin override
+    const adminWs = fakeWs()
+    const ADMIN = { ...USER, userId: 'adminX', role: 'admin' }
+    gw.handleChatConnection(adminWs as unknown as WebSocket, ADMIN as never)
+    adminWs.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'CHAT_SEND', conversationId: convId, text: 'hi' })),
+    )
+    expect(
+      adminWs.sent.some(
+        (m) =>
+          (m as { type: string; message?: string }).type === 'CHAT_ERROR' &&
+          /owner/.test((m as { message?: string }).message ?? ''),
+      ),
+    ).toBe(false)
+  })
 })

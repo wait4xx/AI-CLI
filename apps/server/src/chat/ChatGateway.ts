@@ -72,6 +72,7 @@ export class ChatGateway {
           providerId,
           cwd: msg.cwd,
           claudeSessionId: msg.claudeSessionId,
+          ownerId: user.userId,
           initialTier: msg.initialTier,
         })
         this.attach(ws, conv.state.conversationId)
@@ -95,6 +96,8 @@ export class ChatGateway {
       case 'CHAT_RECONNECT': {
         const conv = this.mgr.get(msg.conversationId)
         if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
+        if (conv.state.ownerId !== user.userId && user.role !== 'admin')
+          return send({ type: 'CHAT_ERROR', message: 'not conversation owner' })
         this.attach(ws, conv.state.conversationId)
         send({
           type: 'CHAT_HISTORY',
@@ -106,6 +109,8 @@ export class ChatGateway {
       case 'CHAT_SEND': {
         const conv = this.mgr.get(msg.conversationId)
         if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
+        if (conv.state.ownerId !== user.userId && user.role !== 'admin')
+          return send({ type: 'CHAT_ERROR', message: 'not conversation owner' })
         conv.send(msg.text)
         auditLog('CHAT_SEND', user.userId, { conversationId: msg.conversationId })
         return
@@ -113,6 +118,8 @@ export class ChatGateway {
       case 'CHAT_SWITCH_VIEW': {
         const conv = this.mgr.get(msg.conversationId)
         if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
+        if (conv.state.ownerId !== user.userId && user.role !== 'admin')
+          return send({ type: 'CHAT_ERROR', message: 'not conversation owner' })
         conv.switchView(msg.viewMode)
         auditLog('CHAT_SWITCH_VIEW', user.userId, {
           conversationId: msg.conversationId,
@@ -123,6 +130,8 @@ export class ChatGateway {
       case 'CHAT_ESCALATE': {
         const conv = this.mgr.get(msg.conversationId)
         if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
+        if (conv.state.ownerId !== user.userId && user.role !== 'admin')
+          return send({ type: 'CHAT_ERROR', message: 'not conversation owner' })
         if (msg.tier === 'Edit' && user.role !== 'admin') {
           return send({ type: 'CHAT_ERROR', message: 'escalation requires admin role' })
         }
