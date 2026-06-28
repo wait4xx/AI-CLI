@@ -84,9 +84,13 @@ export class ClaudeCodeProvider implements ChatProvider {
     for (const block of content) {
       const b = block as Record<string, unknown>
       const kind = b.type as string
-      if (kind === 'text' && typeof b.text === 'string') {
+      // `user`-typed output lines only carry tool_result (tool outputs fed back
+      // to the model). Skip text/tool_use there so a user's own message is never
+      // re-emitted as an assistant text-delta — keeping ProviderEvent role-free
+      // at the source instead of every client having to suppress echoes.
+      if (kind === 'text' && type === 'assistant' && typeof b.text === 'string') {
         events.push({ type: 'text-delta', text: b.text })
-      } else if (kind === 'tool_use') {
+      } else if (kind === 'tool_use' && type === 'assistant') {
         events.push({
           type: 'tool-call-start',
           callId: String(b.id ?? ''),
