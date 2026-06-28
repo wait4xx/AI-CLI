@@ -8,6 +8,7 @@ import type {
   ProviderEvent,
 } from '@ai-cli/shared'
 import { pinoLogger } from '../lib/logger.js'
+import { auditLog } from '../core/audit.js'
 import type { ConversationManager } from './ConversationManager.js'
 
 /**
@@ -75,6 +76,12 @@ export class ChatGateway {
         })
         this.attach(ws, conv.state.conversationId)
         conv.start()
+        auditLog('CHAT_CREATE', user.userId, {
+          conversationId: conv.state.conversationId,
+          claudeSessionId: msg.claudeSessionId,
+          tier: conv.state.tier,
+          cwd: msg.cwd,
+        })
         send({
           type: 'CHAT_CREATED',
           conversationId: conv.state.conversationId,
@@ -100,12 +107,17 @@ export class ChatGateway {
         const conv = this.mgr.get(msg.conversationId)
         if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
         conv.send(msg.text)
+        auditLog('CHAT_SEND', user.userId, { conversationId: msg.conversationId })
         return
       }
       case 'CHAT_SWITCH_VIEW': {
         const conv = this.mgr.get(msg.conversationId)
         if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
         conv.switchView(msg.viewMode)
+        auditLog('CHAT_SWITCH_VIEW', user.userId, {
+          conversationId: msg.conversationId,
+          viewMode: msg.viewMode,
+        })
         return
       }
       case 'CHAT_ESCALATE': {
@@ -114,6 +126,10 @@ export class ChatGateway {
         if (msg.tier === 'Edit' && user.role !== 'admin') {
           return send({ type: 'CHAT_ERROR', message: 'escalation requires admin role' })
         }
+        auditLog('CHAT_ESCALATE', user.userId, {
+          conversationId: msg.conversationId,
+          tier: msg.tier,
+        })
         conv.escalate(msg.tier)
         return
       }
@@ -148,8 +164,10 @@ export class ChatGateway {
         viewMode: conv.state.viewMode,
         tier,
       })
-    const onCrash = (p: { message: string; resumable: boolean }) =>
+    const onCrash = (p: { message: string; resumable: boolean }) => {
+      auditLog('CHAT_CRASHED', undefined, { conversationId, ...p })
       this.broadcast(conversationId, { type: 'CHAT_CRASHED', conversationId, ...p })
+    }
 
     conv.on('event', onEvent)
     conv.on('viewChanged', onView)

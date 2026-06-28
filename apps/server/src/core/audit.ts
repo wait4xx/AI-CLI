@@ -32,6 +32,11 @@ export type AuditEvent =
   | 'FILE_UPLOAD'
   | 'FILE_UPLOAD_DANGEROUS_EXT'
   | 'FILE_COMPRESS'
+  | 'CHAT_CREATE'
+  | 'CHAT_SEND'
+  | 'CHAT_ESCALATE'
+  | 'CHAT_SWITCH_VIEW'
+  | 'CHAT_CRASHED'
 
 // [S6修复] 使用 createWriteStream 异步写入，避免 appendFileSync 阻塞事件循环
 let stream: WriteStream | null = null
