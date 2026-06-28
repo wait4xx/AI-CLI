@@ -233,4 +233,38 @@ describe('useChatWS', () => {
     const sent = JSON.parse(FakeWS.last().sent[0])
     expect(sent.type).toBe('CHAT_CREATE')
   })
+
+  it('auto-reconnects with exponential backoff after a non-auth close', () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = render()
+      act(() => result.current.connect('claude-1', '/repo'))
+      act(() => FakeWS.last().fireOpen())
+      const countAfterConnect = FakeWS.instances.length
+      // Simulate an unexpected close (not 4001)
+      act(() => FakeWS.last().fireClose(1006))
+      // Advance past the max possible first delay (1s jittered)
+      act(() => vi.advanceTimersByTime(2000))
+      // A second FakeWS should have been created
+      expect(FakeWS.instances.length).toBe(countAfterConnect + 1)
+      // Fire open on the new socket and verify CHAT_CREATE is re-sent
+      act(() => FakeWS.last().fireOpen())
+      const sent = JSON.parse(FakeWS.last().sent[0])
+      expect(sent).toMatchObject({ type: 'CHAT_CREATE', claudeSessionId: 'claude-1', cwd: '/repo' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('auth-failure close does NOT spawn a new socket', () => {
+    const onAuthFailure = vi.fn()
+    const { result } = render(onAuthFailure)
+    act(() => result.current.connect('claude-1', '/repo'))
+    act(() => FakeWS.last().fireOpen())
+    const countAfterConnect = FakeWS.instances.length
+    act(() => FakeWS.last().fireClose(4001))
+    expect(onAuthFailure).toHaveBeenCalledTimes(1)
+    // No new socket should have been created
+    expect(FakeWS.instances.length).toBe(countAfterConnect)
+  })
 })

@@ -33,6 +33,8 @@ function isValidChatMsg(data: unknown): data is { type: string; [key: string]: u
 }
 
 const MAX_MESSAGE_BYTES = 256 * 1024
+const INITIAL_RECONNECT_DELAY = 1_000
+const MAX_RECONNECT_DELAY = 30_000
 
 interface ConnectParams {
   claudeSessionId: string
@@ -63,6 +65,8 @@ export function useChatWS(
 ): UseChatWS {
   const wsRef = useRef<WebSocket | null>(null)
   const paramsRef = useRef<ConnectParams | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY)
   const [isConnected, setIsConnected] = useState(false)
   const store = useSessionStore
 
@@ -75,6 +79,13 @@ export function useChatWS(
       ws.onerror = null
       if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
       wsRef.current = null
+    }
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
     }
   }
 
@@ -92,11 +103,15 @@ export function useChatWS(
         store.getState().setChatTier(data.tier)
         store.getState().setChatConnected('CONNECTED')
         setIsConnected(true)
+        reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+        clearReconnectTimer()
         break
       case 'CHAT_HISTORY':
         store.getState().applyChatAction({ type: 'load-history', messages: data.messages })
         store.getState().setChatConnected('CONNECTED')
         setIsConnected(true)
+        reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+        clearReconnectTimer()
         break
       case 'CHAT_EVENT':
         store.getState().applyChatAction({ type: 'event', event: data.event })
@@ -161,6 +176,7 @@ export function useChatWS(
         setIsConnected(false)
         store.getState().setChatConnected('DISCONNECTED')
         if (event.code === WS_CLOSE_CODE.AUTH_FAILED) onAuthFailure()
+        else scheduleReconnect()
       }
 
       ws.onerror = () => {}
@@ -168,8 +184,26 @@ export function useChatWS(
     [getAccessToken, onAuthFailure],
   )
 
+  function scheduleReconnect() {
+    if (reconnectTimerRef.current) return
+    const p = paramsRef.current
+    if (!p) return
+    const delay = reconnectDelayRef.current
+    const jittered = delay * (0.5 + Math.random() * 0.5)
+    reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY)
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null
+      const params = paramsRef.current
+      if (!params) return
+      closeSocket()
+      connectInternal(params.claudeSessionId, params.cwd, params.existingConversationId)
+    }, jittered)
+  }
+
   const connect = useCallback(
     (claudeSessionId: string, cwd: string, existingConversationId?: string | null) => {
+      clearReconnectTimer()
+      reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
       closeSocket()
       connectInternal(claudeSessionId, cwd, existingConversationId ?? null)
     },
@@ -178,6 +212,8 @@ export function useChatWS(
 
   const disconnect = useCallback(() => {
     paramsRef.current = null
+    clearReconnectTimer()
+    reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
     closeSocket()
     store.getState().setChatConnected('DISCONNECTED')
     setIsConnected(false)
