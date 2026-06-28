@@ -13,6 +13,7 @@ const WHITELIST_PATHS = [
   '/api/auth/refresh',
   '/ws/terminal',
   '/ws/control',
+  '/ws/chat', // auth via ?token= query param (verifyWsUpgradeToken), like other WS routes
 ]
 
 export interface StoredUser {
