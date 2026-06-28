@@ -120,7 +120,7 @@ export function chatReducer(state: ChatRenderState, action: ChatAction): ChatRen
         toolCalls: [],
         done: true,
       }))
-      return { ...state, turns, pendingEcho: null }
+      return { ...state, turns, pendingEcho: null, crashed: null }
     }
     case 'reset':
       return initialChatState
