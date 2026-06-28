@@ -1,7 +1,7 @@
 # ============================================================
 # Stage 1: deps — install all dependencies (including devDependencies)
 # ============================================================
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 
 RUN corepack enable && corepack prepare pnpm@8.15.4 --activate
 
@@ -35,7 +35,7 @@ RUN pnpm prune --prod
 # ============================================================
 # Stage 3: runtime — minimal production image
 # ============================================================
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 # tini: PID 1 init (signal forwarding + zombie reaping, ADR-009)
 # tmux: terminal session persistence (>=3.3a)
