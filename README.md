@@ -35,6 +35,7 @@
 ## 功能特性
 
 - **Web 终端 IDE** — 通过 xterm.js 在移动端/桌面浏览器中使用完整终端，支持自定义 tmux 同步滚动条
+- **混合对话视图** — 同一条 Claude Code 对话可在「终端视图」与「对话视图」之间切换；对话视图以 headless `claude -p` stream-json 渲染 markdown 气泡 + 结构化工具卡片，支持探索(只读)/编辑(提权)两档权限
 - **多会话标签页** — 并排运行多个 CLI 会话，即时切换，支持 tmux 连接和 pane 管理
 - **分屏编辑器** — 拖拽调整分屏面板；CodeMirror 6 代码编辑器支持按主题切换语法高亮
 - **多用户** — 管理员/普通用户角色，用户管理界面，按会话设备追踪，观察者模式实现只读共享，会话共享
@@ -210,8 +211,8 @@ AI-CLI/
 │   │       └── lib/           # config（zod）、logger、wsAuth
 │   └── web/                   # React 前端
 │       └── src/
-│           ├── components/     # TerminalContainer, CodeEditor, FileExplorer, SplitPane, DragOverlay, DiffViewer, ...
-│           ├── hooks/         # useAuth, useDualChannelWS, useUiTheme
+│           ├── components/     # TerminalContainer, CodeEditor, FileExplorer, SplitPane, ChatView, MessageBubble, ToolCallCard, ...
+│           ├── hooks/         # useAuth, useDualChannelWS, useChatWS, useUiTheme
 │           ├── lib/           # splitLayout, themes, GestureHandler, offlineCache
 │           └── store/         # Zustand 会话状态管理（持久化）
 ├── packages/
@@ -413,6 +414,7 @@ server {
 - [x] 代码编辑器按主题语法高亮
 - [x] tmux pane 管理和会话共享
 - [x] 用户管理界面和 Diff 查看器
+- [x] 混合对话视图（终端/对话视图切换 + Explore/Edit 提权 + 空闲进程回收）
 - [ ] PWA 图标和启动画面
 - [ ] Claude 审批弹窗（交互式权限流程）
 - [ ] 更多 CLI 适配器（Cursor 等）
