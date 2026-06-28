@@ -26,14 +26,17 @@ function fakeWs() {
     }),
     close: vi.fn(),
     on: vi.fn((t: string, h: (d: unknown) => void) => {
-      ;(handlers[t] ||= []).push(h)
+      handlers[t] ||= []
+      handlers[t].push(h)
     }),
     once: vi.fn((t: string, h: () => void) => {
-      ;(handlers[t] ||= []).push(h as unknown as (d: unknown) => void)
+      handlers[t] ||= []
+      handlers[t].push(h as unknown as (d: unknown) => void)
     }),
     sent: [] as unknown[],
     emit(t: string, d: unknown) {
-      ;(handlers[t] || []).forEach((h) => h(d))
+      const list = handlers[t] || []
+      list.forEach((h) => h(d))
     },
   }
   return ws
