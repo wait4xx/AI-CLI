@@ -141,3 +141,74 @@ export interface JwtPayload {
   iat: number
   exp: number
 }
+
+// ============================================================
+// Hybrid Chat View (Tier 3) —— 混合对话视图协议
+// ============================================================
+
+// headless 对话权限档位(实测: plan 干净只读 / acceptEdits 干净自动编辑;
+// default 在 headless 下死等挂起,永不暴露)。见设计文档 §2.2
+export type ChatPermissionTier = 'Explore' | 'Edit'
+
+// 视图模式: terminal=交互式 PTY(现有路径) / chat=headless 对话
+export type ChatViewMode = 'terminal' | 'chat'
+
+// ChatProvider 归一化事件(无 transport 关切;gateway 会包上 conversationId)
+export type ProviderEvent =
+  | { type: 'text-delta'; text: string }
+  | { type: 'tool-call-start'; callId: string; toolName: string; inputSummary: string }
+  | { type: 'tool-result'; callId: string; status: 'success' | 'error'; outputSnippet: string }
+  | { type: 'status'; state: 'thinking' | 'working' | 'idle' }
+  | { type: 'error'; message: string }
+  | { type: 'done' }
+
+// 对话历史条目(messageLog 用)
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  text: string
+  ts: number
+}
+
+// Chat 通道 客户端 → 服务端
+export type ChatClientMessage =
+  | { type: 'CHAT_AUTH'; accessToken: string; protocolVersion: string }
+  | {
+      type: 'CHAT_CREATE'
+      cwd: string
+      claudeSessionId: string
+      providerId?: string
+      initialTier?: ChatPermissionTier
+    }
+  | { type: 'CHAT_ATTACH'; conversationId: string }
+  | { type: 'CHAT_RECONNECT'; conversationId: string }
+  | { type: 'CHAT_SEND'; conversationId: string; text: string }
+  | { type: 'CHAT_SWITCH_VIEW'; conversationId: string; viewMode: ChatViewMode }
+  | { type: 'CHAT_ESCALATE'; conversationId: string; tier: ChatPermissionTier }
+  | { type: 'CHAT_PING' }
+
+// Chat 通道 服务端 → 客户端
+export type ChatServerMessage =
+  | { type: 'CHAT_AUTH_OK' }
+  | { type: 'CHAT_PONG' }
+  | {
+      type: 'CHAT_CREATED'
+      conversationId: string
+      claudeSessionId: string
+      tier: ChatPermissionTier
+      viewMode: ChatViewMode
+    }
+  | { type: 'CHAT_EVENT'; conversationId: string; event: ProviderEvent }
+  | {
+      type: 'CHAT_VIEW_CHANGED'
+      conversationId: string
+      viewMode: ChatViewMode
+      tier: ChatPermissionTier
+    }
+  | {
+      type: 'CHAT_CRASHED'
+      conversationId: string
+      message: string
+      resumable: boolean
+    }
+  | { type: 'CHAT_HISTORY'; conversationId: string; messages: ChatMessage[] }
+  | { type: 'CHAT_ERROR'; message: string }
