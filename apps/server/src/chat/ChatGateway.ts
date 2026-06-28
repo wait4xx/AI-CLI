@@ -122,9 +122,10 @@ export class ChatGateway {
 
   /**
    * Subscribe a WebSocket to a conversation's events.
-   * Registers listeners for 'event', 'viewChanged', and 'crashed' on the
-   * Conversation, broadcasting to all subscribers. Listeners are cleaned
-   * up on ws 'close'.
+   * Registers listeners for 'event', 'viewChanged', 'tierChanged', and
+   * 'crashed' on the Conversation, broadcasting to all subscribers.
+   * Listeners are cleaned up on ws 'close'. If the ws is already a
+   * subscriber, this is a no-op (avoids duplicate listeners/broadcasts).
    */
   private attach(ws: WebSocket, conversationId: string): void {
     let set = this.subscribers.get(conversationId)
@@ -132,6 +133,7 @@ export class ChatGateway {
       set = new Set()
       this.subscribers.set(conversationId, set)
     }
+    if (set.has(ws)) return // already attached — avoid duplicate listeners
     set.add(ws)
     const conv = this.mgr.get(conversationId)!
 
@@ -139,16 +141,25 @@ export class ChatGateway {
       this.broadcast(conversationId, { type: 'CHAT_EVENT', conversationId, event })
     const onView = (p: { viewMode: ChatViewMode; tier: ChatPermissionTier }) =>
       this.broadcast(conversationId, { type: 'CHAT_VIEW_CHANGED', conversationId, ...p })
+    const onTier = (tier: ChatPermissionTier) =>
+      this.broadcast(conversationId, {
+        type: 'CHAT_VIEW_CHANGED',
+        conversationId,
+        viewMode: conv.state.viewMode,
+        tier,
+      })
     const onCrash = (p: { message: string; resumable: boolean }) =>
       this.broadcast(conversationId, { type: 'CHAT_CRASHED', conversationId, ...p })
 
     conv.on('event', onEvent)
     conv.on('viewChanged', onView)
+    conv.on('tierChanged', onTier)
     conv.on('crashed', onCrash)
 
     ws.once('close', () => {
       conv.off('event', onEvent)
       conv.off('viewChanged', onView)
+      conv.off('tierChanged', onTier)
       conv.off('crashed', onCrash)
       this.subscribers.get(conversationId)?.delete(ws)
     })

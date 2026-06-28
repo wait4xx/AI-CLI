@@ -159,3 +159,64 @@ describe('ChatGateway', () => {
     ).toBe(true)
   })
 })
+
+describe('ChatGateway — review fixes', () => {
+  it('does not duplicate broadcasts when the same ws attaches twice', () => {
+    const { gw, mgr } = setup()
+    const ws = fakeWs()
+    gw.handleChatConnection(ws as unknown as WebSocket, USER as never)
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '/tmp',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    const convId = (
+      ws.sent.find((m) => (m as { type: string }).type === 'CHAT_CREATED') as {
+        conversationId: string
+      }
+    ).conversationId
+    // same ws attaches again (simulating CHAT_RECONNECT on the same conversation)
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'CHAT_ATTACH', conversationId: convId })))
+    // clear sent so we only count broadcasts from this event
+    ws.sent.length = 0
+    mgr.get(convId)!.emit('event', { type: 'text-delta', text: 'once' })
+    const eventCount = ws.sent.filter((m) => (m as { type: string }).type === 'CHAT_EVENT').length
+    expect(eventCount).toBe(1) // NOT 2
+  })
+
+  it('escalate broadcasts CHAT_VIEW_CHANGED with the new tier', () => {
+    const { gw } = setup()
+    const ws = fakeWs()
+    gw.handleChatConnection(ws as unknown as WebSocket, USER as never) // USER.role === 'admin'
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '/tmp',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    const convId = (
+      ws.sent.find((m) => (m as { type: string }).type === 'CHAT_CREATED') as {
+        conversationId: string
+      }
+    ).conversationId
+    ws.sent.length = 0
+    ws.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'CHAT_ESCALATE', conversationId: convId, tier: 'Edit' })),
+    )
+    const viewChanged = ws.sent.find(
+      (m) => (m as { type: string }).type === 'CHAT_VIEW_CHANGED',
+    ) as { tier?: string; viewMode?: string } | undefined
+    expect(viewChanged).toBeDefined()
+    expect(viewChanged!.tier).toBe('Edit')
+  })
+})
