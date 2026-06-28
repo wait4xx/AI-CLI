@@ -7,6 +7,27 @@ const TIER_FLAG: Record<ChatPermissionTier, string> = {
   Edit: 'acceptEdits',
 }
 
+function summarizeInput(input: unknown): string {
+  if (input == null) return ''
+  try {
+    const s = typeof input === 'string' ? input : JSON.stringify(input)
+    return s.length > 120 ? s.slice(0, 117) + '...' : s
+  } catch {
+    return ''
+  }
+}
+
+function summarizeResult(content: unknown): string {
+  let text: string
+  if (typeof content === 'string') text = content
+  else if (Array.isArray(content)) {
+    text = content
+      .map((c) => (typeof c === 'string' ? c : ((c as { text?: string })?.text ?? '')))
+      .join('')
+  } else text = ''
+  return text.length > 200 ? text.slice(0, 197) + '...' : text
+}
+
 export class ClaudeCodeProvider implements ChatProvider {
   readonly id = 'claude-code'
 
@@ -37,8 +58,51 @@ export class ClaudeCodeProvider implements ChatProvider {
     stdin.write(JSON.stringify(envelope) + '\n')
   }
 
-  parseStreamLine(_line: string): ProviderEvent[] {
-    return [] // Task 4 implements this
+  parseStreamLine(line: string): ProviderEvent[] {
+    let ev: Record<string, unknown>
+    try {
+      ev = JSON.parse(line)
+    } catch {
+      return []
+    }
+    const type = ev.type as string | undefined
+    const events: ProviderEvent[] = []
+
+    if (type === 'system') {
+      if (ev.subtype === 'thinking_tokens') events.push({ type: 'status', state: 'working' })
+      return events
+    }
+    if (type === 'result') {
+      events.push({ type: 'done' })
+      return events
+    }
+    if (type !== 'assistant' && type !== 'user') return events
+
+    const content = (ev.message as { content?: unknown[] } | undefined)?.content
+    if (!Array.isArray(content)) return events
+
+    for (const block of content) {
+      const b = block as Record<string, unknown>
+      const kind = b.type as string
+      if (kind === 'text' && typeof b.text === 'string') {
+        events.push({ type: 'text-delta', text: b.text })
+      } else if (kind === 'tool_use') {
+        events.push({
+          type: 'tool-call-start',
+          callId: String(b.id ?? ''),
+          toolName: String(b.name ?? 'tool'),
+          inputSummary: summarizeInput(b.input),
+        })
+      } else if (kind === 'tool_result') {
+        events.push({
+          type: 'tool-result',
+          callId: String(b.tool_use_id ?? ''),
+          status: b.is_error ? 'error' : 'success',
+          outputSnippet: summarizeResult(b.content),
+        })
+      }
+    }
+    return events
   }
 
   availableTiers(): ChatPermissionTier[] {
