@@ -8,7 +8,7 @@ import { EDITOR_THEME_LIST } from './CodeEditor'
 import { TmuxManagerDrawer } from './TmuxManagerDrawer'
 import { UserManagerDrawer } from './UserManagerDrawer'
 
-const { Root, Trigger, Portal, Overlay, Content, Title, Close } = Drawer
+const { Root, Trigger, Portal, Overlay, Content, Title, Description, Close } = Drawer
 
 export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
   const fontSize = useSessionStore((s) => s.fontSize)
@@ -43,6 +43,9 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
           <div className="mx-auto w-12 h-1.5 rounded-full bg-gray-600 mt-3" />
           <div className="flex items-center justify-between px-4 py-3">
             <Title className={`text-sm font-semibold ${ui.text}`}>Settings</Title>
+            <Description className="sr-only">
+              Adjust appearance, font sizes, terminal and editor themes, and adapter preferences
+            </Description>
             <Close asChild>
               <button className={`p-1 ${ui.textMuted} ${ui.hover}`}>
                 <X className="w-4 h-4" />

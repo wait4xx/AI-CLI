@@ -177,6 +177,9 @@ export function TmuxManagerDrawer({ open, onOpenChange }: TmuxManagerDrawerProps
               <Drawer.Title className={`${ui.text} text-sm font-medium`}>
                 Tmux Sessions
               </Drawer.Title>
+              <Drawer.Description className="sr-only">
+                View, rename, and kill tmux sessions
+              </Drawer.Description>
               <div className="flex items-center gap-2">
                 {sessions.length > 0 && (
                   <button

@@ -157,6 +157,9 @@ export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) 
 
             <div className="px-4 pb-3 shrink-0">
               <Drawer.Title className={`${ui.text} text-sm font-medium`}>New Session</Drawer.Title>
+              <Drawer.Description className="sr-only">
+                Create a new terminal session or Claude conversation
+              </Drawer.Description>
             </div>
 
             <div className="flex-1 overflow-y-auto px-2 pb-4">
