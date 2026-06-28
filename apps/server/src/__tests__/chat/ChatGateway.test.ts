@@ -296,4 +296,28 @@ describe('ChatGateway — review fixes', () => {
       ),
     ).toBe(false)
   })
+
+  it('rejects CHAT_CREATE whose cwd escapes PROJECT_ROOT', () => {
+    const { gw } = setup()
+    const ws = fakeWs()
+    gw.handleChatConnection(ws as unknown as WebSocket, USER as never)
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '../outside',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    expect(
+      ws.sent.some(
+        (m) =>
+          (m as { type: string; message?: string }).type === 'CHAT_ERROR' &&
+          /project root/.test((m as { message?: string }).message ?? ''),
+      ),
+    ).toBe(true)
+    expect(ws.sent.some((m) => (m as { type: string }).type === 'CHAT_CREATED')).toBe(false)
+  })
 })

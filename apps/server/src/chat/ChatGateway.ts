@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { WebSocket } from 'ws'
 import type {
   ChatClientMessage,
@@ -9,6 +10,7 @@ import type {
 } from '@ai-cli/shared'
 import { pinoLogger } from '../lib/logger.js'
 import { auditLog } from '../core/audit.js'
+import { getConfig } from '../lib/config.js'
 import type { ConversationManager } from './ConversationManager.js'
 
 /**
@@ -56,6 +58,20 @@ export class ChatGateway {
     })
   }
 
+  /**
+   * Constrain CHAT_CREATE.cwd to PROJECT_ROOT (mirrors the fs layer's policy).
+   * When FS_ALLOW_ABSOLUTE_PATHS is enabled, any cwd is allowed (bounded only
+   * by the server process's OS permissions, same as the fs routes).
+   */
+  private isCwdAllowed(cwd: string): boolean {
+    const config = getConfig()
+    if (config.FS_ALLOW_ABSOLUTE_PATHS) return true
+    const root = path.resolve(config.PROJECT_ROOT)
+    const resolved = path.isAbsolute(cwd) ? path.resolve(cwd) : path.resolve(root, cwd)
+    const rel = path.relative(root, resolved)
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
+  }
+
   private async dispatch(
     ws: WebSocket,
     user: JwtPayload,
@@ -67,6 +83,8 @@ export class ChatGateway {
         send({ type: 'CHAT_PONG' })
         return
       case 'CHAT_CREATE': {
+        if (msg.cwd && !this.isCwdAllowed(msg.cwd))
+          return send({ type: 'CHAT_ERROR', message: 'cwd outside allowed project root' })
         const providerId = msg.providerId ?? 'claude-code'
         const conv = this.mgr.create({
           providerId,
