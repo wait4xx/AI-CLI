@@ -21,6 +21,7 @@ import {
   collectPanels,
   genId,
   isContainer,
+  findNode,
   findParentWithIndex,
 } from '../lib/splitLayout'
 
@@ -45,6 +46,7 @@ interface Conversation {
   cwd: string
   viewMode: ChatViewMode
   tier: ChatPermissionTier
+  panelId: string // which terminal panel hosts this conversation
 }
 
 interface SessionState {
@@ -406,7 +408,21 @@ export const useSessionStore = create<SessionState>()(
           controlRequests: s.controlRequests.filter((r) => r.requestId !== requestId),
         })),
 
-      startConversation: (claudeSessionId, cwd) =>
+      startConversation: (claudeSessionId, cwd) => {
+        // Pin the conversation to a terminal panel: prefer the active panel
+        // when it is a terminal, else the first terminal panel in the layout.
+        // The persisted layout may not contain 'terminal-main' after splits,
+        // so we must not hardcode it.
+        const { splitRoot, activePanelId } = get()
+        const activeNode = findNode(splitRoot, activePanelId)
+        let panelId =
+          activeNode && !isContainer(activeNode) && activeNode.type === 'terminal'
+            ? activePanelId
+            : ''
+        if (!panelId) {
+          const firstTerminal = collectPanels(splitRoot).find((p) => p.type === 'terminal')
+          panelId = firstTerminal?.id ?? activePanelId
+        }
         set({
           conversation: {
             conversationId: null,
@@ -414,9 +430,11 @@ export const useSessionStore = create<SessionState>()(
             cwd,
             viewMode: 'chat',
             tier: 'Explore',
+            panelId,
           },
           chat: initialChatState,
-        }),
+        })
+      },
 
       endConversation: () =>
         set({ conversation: null, chat: initialChatState, chatConnected: false }),

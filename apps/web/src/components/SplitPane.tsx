@@ -242,11 +242,12 @@ function TerminalPanel({ panelId }: { panelId: string }) {
   const sessionId = useSessionStore((s) => s.terminalSessions[panelId])
   const conversation = useSessionStore((s) => s.conversation)
 
-  // terminal-main hosts the hybrid chat conversation: ChatView stays mounted
-  // (keeping its /ws/chat connection alive across view switches), toggling
-  // visibility with viewMode. Switching to terminal kills the server-side chat
-  // process; the persistent WS lets us send CHAT_SWITCH_VIEW back to respawn it.
-  if (panelId === 'terminal-main' && conversation) {
+  // The panel pinned in `conversation.panelId` hosts the hybrid chat: ChatView
+  // stays mounted (keeping its /ws/chat connection alive across view switches),
+  // toggling visibility with viewMode. Switching to terminal kills the
+  // server-side chat process; the persistent WS lets us send CHAT_SWITCH_VIEW
+  // back to respawn it.
+  if (conversation && conversation.panelId === panelId) {
     const inChat = conversation.viewMode === 'chat'
     return (
       <div className="absolute inset-0">

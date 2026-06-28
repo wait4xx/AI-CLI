@@ -16,6 +16,7 @@ describe('sessionStore chat extensions', () => {
       cwd: '/repo',
       viewMode: 'chat',
       tier: 'Explore',
+      panelId: 'terminal-main',
     })
     expect(chat).toEqual(initialChatState)
   })
