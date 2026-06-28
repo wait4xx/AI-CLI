@@ -20,8 +20,13 @@ import type { ConversationManager } from './ConversationManager.js'
  * subscribers, and RBAC escalation gate (non-admin users cannot escalate
  * to Edit tier).
  */
+const CHAT_IDLE_TTL_MS = 60_000
+
 export class ChatGateway {
   private subscribers = new Map<string, Set<WebSocket>>()
+  // Pending destruction timers — a conversation with no subscribers is reaped
+  // after CHAT_IDLE_TTL_MS to reclaim the headless claude process.
+  private reapers = new Map<string, NodeJS.Timeout>()
 
   constructor(
     private readonly mgr: ConversationManager,
@@ -178,6 +183,7 @@ export class ChatGateway {
     }
     if (set.has(ws)) return // already attached — avoid duplicate listeners
     set.add(ws)
+    this.cancelReaper(conversationId)
     const conv = this.mgr.get(conversationId)!
 
     const onEvent = (event: ProviderEvent) =>
@@ -206,8 +212,34 @@ export class ChatGateway {
       conv.off('viewChanged', onView)
       conv.off('tierChanged', onTier)
       conv.off('crashed', onCrash)
-      this.subscribers.get(conversationId)?.delete(ws)
+      const remaining = this.subscribers.get(conversationId)
+      remaining?.delete(ws)
+      if (remaining && remaining.size === 0) this.scheduleReaper(conversationId)
     })
+  }
+
+  /**
+   * Schedule destruction of a conversation once it has no subscribers. If a
+   * client re-attaches (CHAT_RECONNECT) before the timer fires, cancelReaper
+   * aborts it. This reclaims the headless claude process instead of leaking it.
+   */
+  private scheduleReaper(conversationId: string): void {
+    if (this.reapers.has(conversationId)) return
+    const timer = setTimeout(() => {
+      this.reapers.delete(conversationId)
+      this.subscribers.delete(conversationId)
+      this.mgr.destroy(conversationId)
+      pinoLogger.info({ conversationId }, 'Chat conversation reaped (idle, no subscribers)')
+    }, CHAT_IDLE_TTL_MS)
+    this.reapers.set(conversationId, timer)
+  }
+
+  private cancelReaper(conversationId: string): void {
+    const timer = this.reapers.get(conversationId)
+    if (timer) {
+      clearTimeout(timer)
+      this.reapers.delete(conversationId)
+    }
   }
 
   /**

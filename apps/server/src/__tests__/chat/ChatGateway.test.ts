@@ -320,4 +320,64 @@ describe('ChatGateway — review fixes', () => {
     ).toBe(true)
     expect(ws.sent.some((m) => (m as { type: string }).type === 'CHAT_CREATED')).toBe(false)
   })
+
+  it('reaps an idle conversation after the grace period', () => {
+    vi.useFakeTimers()
+    const { gw, mgr } = setup()
+    const ws = fakeWs()
+    gw.handleChatConnection(ws as unknown as WebSocket, USER as never)
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '/tmp',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    const convId = (
+      ws.sent.find((m) => (m as { type: string }).type === 'CHAT_CREATED') as {
+        conversationId: string
+      }
+    ).conversationId
+    expect(mgr.get(convId)).toBeDefined()
+    ws.emit('close', {}) // last subscriber leaves
+    expect(mgr.get(convId)).toBeDefined() // not reaped immediately
+    vi.advanceTimersByTime(60_000)
+    expect(mgr.get(convId)).toBeUndefined() // reaped after grace period
+    vi.useRealTimers()
+  })
+
+  it('cancels reaping when a subscriber re-attaches within the grace period', () => {
+    vi.useFakeTimers()
+    const { gw, mgr } = setup()
+    const ws = fakeWs()
+    gw.handleChatConnection(ws as unknown as WebSocket, USER as never)
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '/tmp',
+          claudeSessionId: '11111111-2222-3333-4444-555555555555',
+        }),
+      ),
+    )
+    const convId = (
+      ws.sent.find((m) => (m as { type: string }).type === 'CHAT_CREATED') as {
+        conversationId: string
+      }
+    ).conversationId
+    ws.emit('close', {}) // last subscriber leaves → reaper scheduled
+    const ws2 = fakeWs()
+    gw.handleChatConnection(ws2 as unknown as WebSocket, USER as never)
+    ws2.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'CHAT_ATTACH', conversationId: convId })),
+    )
+    vi.advanceTimersByTime(60_000)
+    expect(mgr.get(convId)).toBeDefined() // NOT reaped — re-attach cancelled it
+    vi.useRealTimers()
+  })
 })
