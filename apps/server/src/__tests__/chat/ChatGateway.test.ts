@@ -344,7 +344,7 @@ describe('ChatGateway — review fixes', () => {
     expect(mgr.get(convId)).toBeDefined()
     ws.emit('close', {}) // last subscriber leaves
     expect(mgr.get(convId)).toBeDefined() // not reaped immediately
-    vi.advanceTimersByTime(60_000)
+    vi.advanceTimersByTime(31_000)
     expect(mgr.get(convId)).toBeUndefined() // reaped after grace period
     vi.useRealTimers()
   })
@@ -376,7 +376,7 @@ describe('ChatGateway — review fixes', () => {
       'message',
       Buffer.from(JSON.stringify({ type: 'CHAT_ATTACH', conversationId: convId })),
     )
-    vi.advanceTimersByTime(60_000)
+    vi.advanceTimersByTime(31_000)
     expect(mgr.get(convId)).toBeDefined() // NOT reaped — re-attach cancelled it
     vi.useRealTimers()
   })

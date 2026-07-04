@@ -215,7 +215,10 @@ export class ChatGateway {
     conv.on('tierChanged', onTier)
     conv.on('crashed', onCrash)
 
+    let done = false
     const cleanup = () => {
+      if (done) return
+      done = true
       conv.off('event', onEvent)
       conv.off('viewChanged', onView)
       conv.off('tierChanged', onTier)
