@@ -380,4 +380,33 @@ describe('ChatGateway — review fixes', () => {
     expect(mgr.get(convId)).toBeDefined() // NOT reaped — re-attach cancelled it
     vi.useRealTimers()
   })
+
+  it('CHAT_DETACH removes the ws from subscribers (reaper eligible)', async () => {
+    vi.useFakeTimers()
+    const { gw, mgr } = setup()
+    const ws = fakeWs()
+    gw.handleChatConnection(ws as unknown as WebSocket, USER)
+    ws.emit(
+      'message',
+      Buffer.from(
+        JSON.stringify({
+          type: 'CHAT_CREATE',
+          cwd: '',
+          claudeSessionId: 'c-1',
+          providerId: 'claude-code',
+        }),
+      ),
+    )
+    await Promise.resolve()
+    const convId = (ws.sent[0] as { conversationId: string }).conversationId
+    expect(mgr.get(convId)).toBeDefined()
+
+    ws.emit('message', Buffer.from(JSON.stringify({ type: 'CHAT_DETACH', conversationId: convId })))
+    await Promise.resolve()
+    expect(mgr.get(convId)).toBeDefined() // reaper 还没到期
+
+    vi.advanceTimersByTime(31_000) // 超过 30s reaper
+    expect(mgr.get(convId)).toBeUndefined()
+    vi.useRealTimers()
+  })
 })
