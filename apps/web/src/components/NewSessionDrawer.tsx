@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { Drawer } from 'vaul'
-import { Plus, Terminal, Monitor, Loader2, RefreshCw, Folder, MessageSquare } from 'lucide-react'
+import { Plus, Terminal, Monitor, Loader2, RefreshCw, Folder, MessageSquare, X } from 'lucide-react'
 import { useSessionStore } from '../store/sessionStore'
 import { useUiTheme } from '../hooks/useUiTheme'
 
@@ -26,6 +26,55 @@ interface Completion {
 interface NewSessionDrawerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+}
+
+function ConversationList({ onOpenChange }: { onOpenChange: (o: boolean) => void }) {
+  const ui = useUiTheme()
+  const conversations = useSessionStore((s) => s.conversations)
+  const activeId = useSessionStore((s) => s.activeConversationId)
+  if (conversations.length === 0) return null
+  return (
+    <div className="px-1 mb-2">
+      <div className={`px-3 py-1 text-xs ${ui.textDim}`}>Conversations</div>
+      {conversations.map((c) => {
+        const isActive = c.conversationId === activeId
+        const dot =
+          c.status === 'active'
+            ? 'bg-green-400'
+            : c.status === 'connecting'
+              ? 'bg-yellow-400'
+              : 'bg-red-400'
+        return (
+          <div
+            key={c.claudeSessionId}
+            onClick={() => {
+              if (c.conversationId) {
+                useSessionStore.getState().chatSwitchTo?.(c.conversationId)
+                onOpenChange(false)
+              }
+            }}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer ${ui.hover} ${isActive ? 'bg-blue-500/10' : ''}`}
+          >
+            <span className={`w-2 h-2 rounded-full ${dot} shrink-0`} />
+            <span className={`text-sm ${ui.text} truncate flex-1`}>
+              {c.claudeSessionId.slice(0, 8)}
+            </span>
+            <span className={`text-[10px] ${ui.textDim}`}>{c.tier}</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                useSessionStore.getState().chatCloseConversation?.(c.conversationId)
+              }}
+              className={`p-0.5 rounded ${ui.hover} shrink-0`}
+              aria-label="Close conversation"
+            >
+              <X className="w-3.5 h-3.5 text-gray-500" />
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) {
@@ -110,8 +159,7 @@ export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) 
   }, [onOpenChange, cwd, selectedAdapter])
 
   const handleNewConversation = useCallback(() => {
-    const claudeSessionId = crypto.randomUUID()
-    useSessionStore.getState().startConversation(claudeSessionId, cwd || '')
+    useSessionStore.getState().chatCreateConversation?.(cwd || '')
     onOpenChange(false)
   }, [onOpenChange, cwd])
 
@@ -190,6 +238,9 @@ export function NewSessionDrawer({ open, onOpenChange }: NewSessionDrawerProps) 
                   <p className={`truncate text-xs ${ui.textDim}`}>对话视图(可切换终端)</p>
                 </div>
               </button>
+
+              {/* Active conversations list */}
+              <ConversationList onOpenChange={onOpenChange} />
 
               {/* CWD input with autocomplete */}
               <div className="relative px-1 mb-2">
