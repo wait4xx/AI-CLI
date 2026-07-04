@@ -223,4 +223,4 @@ export type ChatServerMessage =
       resumable: boolean
     }
   | { type: 'CHAT_HISTORY'; conversationId: string; messages: ChatMessage[] }
-  | { type: 'CHAT_ERROR'; message: string }
+  | { type: 'CHAT_ERROR'; message: string; conversationId?: string }

@@ -122,7 +122,14 @@ export class ChatGateway {
       case 'CHAT_ATTACH':
       case 'CHAT_RECONNECT': {
         const conv = this.mgr.get(msg.conversationId)
-        if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
+        if (!conv)
+          // Tag the error with the conversationId so the client can drop the
+          // stale entry locally (e.g. reaped during a reconnect outage).
+          return send({
+            type: 'CHAT_ERROR',
+            conversationId: msg.conversationId,
+            message: 'conversation not found',
+          })
         if (conv.state.ownerId !== user.userId && user.role !== 'admin')
           return send({ type: 'CHAT_ERROR', message: 'not conversation owner' })
         this.attach(ws, conv.state.conversationId)

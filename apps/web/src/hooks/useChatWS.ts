@@ -138,9 +138,15 @@ export function useChatWS(
         })
         break
       }
-      case 'CHAT_ERROR':
-        console.error('[Chat WS] error:', (data as { message: string }).message)
+      case 'CHAT_ERROR': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_ERROR' }>
+        console.error('[Chat WS] error:', m.message)
+        // A RECONNECT for a conversation the server already reaped (e.g. after
+        // a reconnect outage longer than the 30s idle TTL) returns an error
+        // tagged with conversationId — drop the stale entry locally.
+        if (m.conversationId) store.getState().closeConversation(m.conversationId)
         break
+      }
       case 'CHAT_PONG':
       case 'CHAT_AUTH_OK':
         break
