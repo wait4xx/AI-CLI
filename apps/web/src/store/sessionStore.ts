@@ -137,7 +137,10 @@ interface SessionState {
   // Hybrid chat view state
   chatConnected: boolean
   chatConnectionPhase: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'
-  // Chat WS function refs (set by ChatView), mirroring the terminal WS refs
+  // Chat WS function refs (set by ChatTransport), mirroring the terminal WS refs
+  chatCreateConversation: ((cwd: string) => void) | null
+  chatSwitchTo: ((conversationId: string) => void) | null
+  chatCloseConversation: ((conversationId: string) => void) | null
   sendChatMessage: ((text: string) => void) | null
   chatEscalate: ((tier: ChatPermissionTier) => void) | null
   chatSwitchView: ((mode: ChatViewMode) => void) | null
@@ -293,6 +296,9 @@ const initialState = {
   maxConversations: 5,
   chatConnected: false,
   chatConnectionPhase: 'DISCONNECTED' as const,
+  chatCreateConversation: null as ((cwd: string) => void) | null,
+  chatSwitchTo: null as ((conversationId: string) => void) | null,
+  chatCloseConversation: null as ((conversationId: string) => void) | null,
   sendChatMessage: null as ((text: string) => void) | null,
   chatEscalate: null as ((tier: ChatPermissionTier) => void) | null,
   chatSwitchView: null as ((mode: ChatViewMode) => void) | null,
