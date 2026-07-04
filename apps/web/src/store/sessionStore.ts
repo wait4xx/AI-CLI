@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { AgentStatus, type ChatPermissionTier, type ChatViewMode } from '@ai-cli/shared'
+import {
+  AgentStatus,
+  type ChatPermissionTier,
+  type ChatViewMode,
+  type ConversationMeta,
+} from '@ai-cli/shared'
 import {
   chatReducer,
   initialChatState,
@@ -21,7 +26,6 @@ import {
   collectPanels,
   genId,
   isContainer,
-  findNode,
   findParentWithIndex,
 } from '../lib/splitLayout'
 
@@ -38,15 +42,6 @@ interface CurrentUser {
   userId: string
   username: string
   role: 'admin' | 'user'
-}
-
-interface Conversation {
-  conversationId: string | null
-  claudeSessionId: string
-  cwd: string
-  viewMode: ChatViewMode
-  tier: ChatPermissionTier
-  panelId: string // which terminal panel hosts this conversation
 }
 
 interface SessionState {
@@ -132,9 +127,14 @@ interface SessionState {
     sessionId: string
   }>
 
+  // Multi-conversation (replaces single conversation/chat fields)
+  conversations: ConversationMeta[]
+  chats: Record<string, ChatRenderState>
+  activeConversationId: string | null
+  subscribedConversationIds: string[]
+  maxConversations: number
+
   // Hybrid chat view state
-  conversation: Conversation | null
-  chat: ChatRenderState
   chatConnected: boolean
   chatConnectionPhase: 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'
   // Chat WS function refs (set by ChatView), mirroring the terminal WS refs
@@ -188,14 +188,20 @@ interface SessionState {
   }) => void
   removeControlRequest: (requestId: string) => void
 
-  // Hybrid chat view actions
-  startConversation: (claudeSessionId: string, cwd: string) => void
-  endConversation: () => void
-  setConversationId: (id: string) => void
-  setChatViewMode: (mode: ChatViewMode) => void
-  setChatTier: (tier: ChatPermissionTier) => void
+  // Multi-conversation actions
+  createConversation: (cwd: string) => string
+  switchTo: (conversationId: string) => void
+  closeConversation: (conversationId: string) => void
+  setConversationStatus: (id: string, status: ConversationMeta['status']) => void
+  setConversationViewMode: (id: string, mode: ChatViewMode) => void
+  setConversationTier: (id: string, tier: ChatPermissionTier) => void
+  setConversationId: (claudeSessionId: string, conversationId: string) => void
+  applyChatAction: (conversationId: string, action: ChatAction) => void
+  markSubscribed: (conversationId: string) => void
+  setMaxConversations: (n: number) => void
+
+  // Chat WS (global, single WS)
   setChatConnected: (phase: SessionState['chatConnectionPhase']) => void
-  applyChatAction: (action: ChatAction) => void
 
   // Split pane actions
   splitPanel: (
@@ -280,8 +286,11 @@ const initialState = {
   observerSessions: {},
   connectedDevices: [],
   controlRequests: [],
-  conversation: null as Conversation | null,
-  chat: initialChatState,
+  conversations: [] as ConversationMeta[],
+  chats: {} as Record<string, ChatRenderState>,
+  activeConversationId: null as string | null,
+  subscribedConversationIds: [] as string[],
+  maxConversations: 5,
   chatConnected: false,
   chatConnectionPhase: 'DISCONNECTED' as const,
   sendChatMessage: null as ((text: string) => void) | null,
@@ -408,56 +417,123 @@ export const useSessionStore = create<SessionState>()(
           controlRequests: s.controlRequests.filter((r) => r.requestId !== requestId),
         })),
 
-      startConversation: (claudeSessionId, cwd) => {
-        // Pin the conversation to a terminal panel: prefer the active panel
-        // when it is a terminal, else the first terminal panel in the layout.
-        // The persisted layout may not contain 'terminal-main' after splits,
-        // so we must not hardcode it.
-        const { splitRoot, activePanelId } = get()
-        const activeNode = findNode(splitRoot, activePanelId)
-        let panelId =
-          activeNode && !isContainer(activeNode) && activeNode.type === 'terminal'
-            ? activePanelId
-            : ''
-        if (!panelId) {
-          const firstTerminal = collectPanels(splitRoot).find((p) => p.type === 'terminal')
-          panelId = firstTerminal?.id ?? activePanelId
+      createConversation: (cwd) => {
+        const { conversations, maxConversations } = get()
+        let next = conversations
+        if (conversations.length >= maxConversations) {
+          const oldest = [...conversations].sort((a, b) => a.lastActivity - b.lastActivity)[0]
+          // Evict by claudeSessionId (always a unique UUID); closeConversation
+          // matches on either field so placeholders (conversationId='') don't
+          // collide when multiple are still pending CHAT_CREATED.
+          get().closeConversation(oldest.claudeSessionId)
+          next = get().conversations
         }
-        set({
-          conversation: {
-            conversationId: null,
-            claudeSessionId,
-            cwd,
-            viewMode: 'chat',
-            tier: 'Explore',
-            panelId,
-          },
-          chat: initialChatState,
-        })
+        const claudeSessionId = crypto.randomUUID()
+        const placeholder: ConversationMeta = {
+          conversationId: '',
+          claudeSessionId,
+          cwd,
+          viewMode: 'chat',
+          tier: 'Explore',
+          status: 'connecting',
+          lastActivity: Date.now(),
+        }
+        ;(get() as SessionState & { _pendingActiveClaudeId?: string })._pendingActiveClaudeId =
+          claudeSessionId
+        set({ conversations: [...next, placeholder], activeConversationId: '' })
+        return claudeSessionId
       },
 
-      endConversation: () =>
-        set({ conversation: null, chat: initialChatState, chatConnected: false }),
+      switchTo: (conversationId) =>
+        set((s) => ({
+          activeConversationId: conversationId,
+          conversations: s.conversations.map((c) =>
+            c.conversationId === conversationId ? { ...c, lastActivity: Date.now() } : c,
+          ),
+        })),
 
-      setConversationId: (id) => {
-        const conv = get().conversation
-        if (conv) set({ conversation: { ...conv, conversationId: id } })
-      },
+      closeConversation: (conversationId) =>
+        set((s) => {
+          // Match on conversationId OR claudeSessionId — placeholders carry
+          // conversationId='' until CHAT_CREATED arrives, so callers that know
+          // the claudeSessionId (e.g. LRU eviction) can target a single entry.
+          const removed = s.conversations.find(
+            (c) => c.conversationId === conversationId || c.claudeSessionId === conversationId,
+          )
+          const targetId = removed?.conversationId ?? conversationId
+          const remaining = s.conversations.filter(
+            (c) =>
+              c !== removed &&
+              c.conversationId !== conversationId &&
+              c.claudeSessionId !== conversationId,
+          )
+          const nextChats = { ...s.chats }
+          delete nextChats[targetId]
+          delete nextChats[conversationId]
+          let nextActive = s.activeConversationId
+          if (s.activeConversationId === targetId || s.activeConversationId === conversationId) {
+            nextActive = remaining[remaining.length - 1]?.conversationId ?? null
+          }
+          return {
+            conversations: remaining,
+            chats: nextChats,
+            activeConversationId: nextActive,
+            subscribedConversationIds: s.subscribedConversationIds.filter(
+              (id) => id !== targetId && id !== conversationId,
+            ),
+          }
+        }),
 
-      setChatViewMode: (mode) => {
-        const conv = get().conversation
-        if (conv) set({ conversation: { ...conv, viewMode: mode } })
-      },
+      setConversationStatus: (id, status) =>
+        set((s) => ({
+          conversations: s.conversations.map((c) =>
+            c.conversationId === id ? { ...c, status } : c,
+          ),
+        })),
 
-      setChatTier: (tier) => {
-        const conv = get().conversation
-        if (conv) set({ conversation: { ...conv, tier } })
-      },
+      setConversationViewMode: (id, mode) =>
+        set((s) => ({
+          conversations: s.conversations.map((c) =>
+            c.conversationId === id ? { ...c, viewMode: mode, lastActivity: Date.now() } : c,
+          ),
+        })),
+
+      setConversationTier: (id, tier) =>
+        set((s) => ({
+          conversations: s.conversations.map((c) => (c.conversationId === id ? { ...c, tier } : c)),
+        })),
+
+      setConversationId: (claudeSessionId, conversationId) =>
+        set((s) => {
+          const conversations = s.conversations.map((c) =>
+            c.claudeSessionId === claudeSessionId
+              ? { ...c, conversationId, status: 'active' as const }
+              : c,
+          )
+          const pending = (s as SessionState & { _pendingActiveClaudeId?: string })
+            ._pendingActiveClaudeId
+          const activeConversationId =
+            pending === claudeSessionId ? conversationId : s.activeConversationId
+          return { conversations, activeConversationId }
+        }),
+
+      applyChatAction: (conversationId, action) =>
+        set((s) => {
+          const prev = s.chats[conversationId] ?? initialChatState
+          return { chats: { ...s.chats, [conversationId]: chatReducer(prev, action) } }
+        }),
+
+      markSubscribed: (conversationId) =>
+        set((s) =>
+          s.subscribedConversationIds.includes(conversationId)
+            ? s
+            : { subscribedConversationIds: [...s.subscribedConversationIds, conversationId] },
+        ),
+
+      setMaxConversations: (n) => set({ maxConversations: Math.max(1, Math.min(10, n)) }),
 
       setChatConnected: (phase) =>
         set({ chatConnected: phase === 'CONNECTED', chatConnectionPhase: phase }),
-
-      applyChatAction: (action) => set({ chat: chatReducer(get().chat, action) }),
 
       addSession: () => {
         const MAX_SESSIONS = 10
@@ -840,8 +916,9 @@ export const useSessionStore = create<SessionState>()(
         terminalSessions: state.terminalSessions,
         sessions: state.sessions,
         activeSessionIndex: state.activeSessionIndex,
+        maxConversations: state.maxConversations,
       }),
-      version: 1,
+      version: 2,
     },
   ),
 )
