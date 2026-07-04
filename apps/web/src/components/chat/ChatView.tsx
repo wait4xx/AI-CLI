@@ -27,10 +27,19 @@ export function ChatView() {
     el?.scrollTo?.({ top: el.scrollHeight })
   }, [chat?.turns, activeId])
 
-  if (!conversation || !chat) {
+  if (!conversation) {
     return (
       <div className={`absolute inset-0 flex items-center justify-center text-sm ${ui.textDim}`}>
         No active conversation
+      </div>
+    )
+  }
+  if (!chat) {
+    // A placeholder exists (status: 'connecting') but CHAT_CREATED hasn't
+    // arrived yet — show a connecting state rather than "no conversation".
+    return (
+      <div className={`absolute inset-0 flex items-center justify-center text-sm ${ui.textDim}`}>
+        Connecting…
       </div>
     )
   }

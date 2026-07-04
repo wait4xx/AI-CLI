@@ -63,7 +63,9 @@ function ConversationList({ onOpenChange }: { onOpenChange: (o: boolean) => void
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                useSessionStore.getState().chatCloseConversation?.(c.conversationId)
+                // claudeSessionId is a stable UUID even for placeholders (whose
+                // conversationId is ''); closeConversation matches either key.
+                useSessionStore.getState().chatCloseConversation?.(c.claudeSessionId)
               }}
               className={`p-0.5 rounded ${ui.hover} shrink-0`}
               aria-label="Close conversation"

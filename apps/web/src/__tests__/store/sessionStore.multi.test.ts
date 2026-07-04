@@ -15,11 +15,16 @@ describe('multi-conversation store', () => {
 
   it('switchTo changes activeConversationId', () => {
     const s = useSessionStore.getState()
-    s.createConversation('/a')
-    s.createConversation('/b')
-    const [first] = useSessionStore.getState().conversations
-    s.switchTo(first.conversationId)
-    expect(useSessionStore.getState().activeConversationId).toBe(first.conversationId)
+    const claudeA = s.createConversation('/a')
+    const claudeB = s.createConversation('/b')
+    // Backfill server-assigned ids so switchTo targets a real conversationId
+    // (placeholders have conversationId: '' until CHAT_CREATED arrives).
+    s.setConversationId(claudeA, 'conv-a')
+    s.setConversationId(claudeB, 'conv-b')
+    // The most recently created conversation is active.
+    expect(useSessionStore.getState().activeConversationId).toBe('conv-b')
+    s.switchTo('conv-a')
+    expect(useSessionStore.getState().activeConversationId).toBe('conv-a')
   })
 
   it('closeConversation removes from conversations/chats/subscriptions', () => {
@@ -46,14 +51,48 @@ describe('multi-conversation store', () => {
     expect(st.subscribedConversationIds).not.toContain('c1')
   })
 
+  it('closing the active conversation switches active to the last remaining', () => {
+    const s = useSessionStore.getState()
+    useSessionStore.setState({
+      conversations: [
+        {
+          conversationId: 'c1',
+          claudeSessionId: 'x',
+          cwd: '/a',
+          viewMode: 'chat',
+          tier: 'Explore',
+          status: 'active',
+          lastActivity: 1,
+        },
+        {
+          conversationId: 'c2',
+          claudeSessionId: 'y',
+          cwd: '/b',
+          viewMode: 'chat',
+          tier: 'Explore',
+          status: 'active',
+          lastActivity: 2,
+        },
+      ],
+      chats: { c1: { ...initialChatState }, c2: { ...initialChatState } },
+      activeConversationId: 'c1',
+    })
+    s.closeConversation('c1')
+    const st = useSessionStore.getState()
+    expect(st.conversations).toHaveLength(1)
+    expect(st.activeConversationId).toBe('c2')
+  })
+
   it('LRU closes oldest when exceeding maxConversations', () => {
     const s = useSessionStore.getState()
     s.setMaxConversations(2)
-    s.createConversation('/a')
+    const claudeA = s.createConversation('/a')
     s.createConversation('/b')
-    s.createConversation('/c')
+    s.createConversation('/c') // exceeds cap → evicts /a (oldest by lastActivity)
     const st = useSessionStore.getState()
     expect(st.conversations).toHaveLength(2)
+    expect(st.conversations.find((c) => c.claudeSessionId === claudeA)).toBeUndefined()
+    expect(st.conversations.some((c) => c.cwd === '/c')).toBe(true)
   })
 
   it('applyChatAction routes by conversationId', () => {
