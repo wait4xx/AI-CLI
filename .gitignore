@@ -15,3 +15,7 @@ test-results/
 coverage/
 docs/learning-guide/
 TASK_GUIDE.md
+.superpowers/
+docs/superpowers/specs/
+docs/superpowers/plans/
+docs/competitor-analysis.md
