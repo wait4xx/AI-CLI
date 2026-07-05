@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useChatWS } from '../../hooks/useChatWS'
 import { useSessionStore } from '../../store/sessionStore'

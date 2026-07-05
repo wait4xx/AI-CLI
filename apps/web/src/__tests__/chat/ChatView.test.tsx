@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ChatPermissionTier, ChatViewMode } from '@ai-cli/shared'
+import type { ChatPermissionTier } from '@ai-cli/shared'
 import { initialChatState } from '../../lib/chatReducer'
 
 vi.mock('../../hooks/useAuth', () => ({ useAuth: () => ({ logout: vi.fn() }) }))
