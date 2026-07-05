@@ -45,7 +45,8 @@ export class ChatGateway {
    * @param user - The authenticated user (verified via query-param JWT)
    */
   handleChatConnection(ws: WebSocket, user: JwtPayload): void {
-    ;(ws as WebSocket & { __id: string }).__id = randomUUID()
+    const wsWithId = ws as WebSocket & { __id: string }
+    wsWithId.__id = randomUUID()
     pinoLogger.info({ userId: user.userId }, 'Chat WS connected')
 
     const send = (m: ChatServerMessage) => {
