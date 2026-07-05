@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { WebSocket } from 'ws'
 import type {
   ChatClientMessage,
@@ -20,13 +21,15 @@ import type { ConversationManager } from './ConversationManager.js'
  * subscribers, and RBAC escalation gate (non-admin users cannot escalate
  * to Edit tier).
  */
-const CHAT_IDLE_TTL_MS = 60_000
+const CHAT_IDLE_TTL_MS = 30_000
 
 export class ChatGateway {
   private subscribers = new Map<string, Set<WebSocket>>()
   // Pending destruction timers — a conversation with no subscribers is reaped
   // after CHAT_IDLE_TTL_MS to reclaim the headless claude process.
   private reapers = new Map<string, NodeJS.Timeout>()
+  // per-(ws,conversation) cleanup fns，detach 与 close 共用
+  private detachCleanups = new Map<string, () => void>()
 
   constructor(
     private readonly mgr: ConversationManager,
@@ -42,6 +45,8 @@ export class ChatGateway {
    * @param user - The authenticated user (verified via query-param JWT)
    */
   handleChatConnection(ws: WebSocket, user: JwtPayload): void {
+    const wsWithId = ws as WebSocket & { __id: string }
+    wsWithId.__id = randomUUID()
     pinoLogger.info({ userId: user.userId }, 'Chat WS connected')
 
     const send = (m: ChatServerMessage) => {
@@ -118,7 +123,14 @@ export class ChatGateway {
       case 'CHAT_ATTACH':
       case 'CHAT_RECONNECT': {
         const conv = this.mgr.get(msg.conversationId)
-        if (!conv) return send({ type: 'CHAT_ERROR', message: 'conversation not found' })
+        if (!conv)
+          // Tag the error with the conversationId so the client can drop the
+          // stale entry locally (e.g. reaped during a reconnect outage).
+          return send({
+            type: 'CHAT_ERROR',
+            conversationId: msg.conversationId,
+            message: 'conversation not found',
+          })
         if (conv.state.ownerId !== user.userId && user.role !== 'admin')
           return send({ type: 'CHAT_ERROR', message: 'not conversation owner' })
         this.attach(ws, conv.state.conversationId)
@@ -165,6 +177,10 @@ export class ChatGateway {
         conv.escalate(msg.tier)
         return
       }
+      case 'CHAT_DETACH': {
+        this.detach(ws, msg.conversationId)
+        return
+      }
     }
   }
 
@@ -207,15 +223,33 @@ export class ChatGateway {
     conv.on('tierChanged', onTier)
     conv.on('crashed', onCrash)
 
-    ws.once('close', () => {
+    let done = false
+    const cleanup = () => {
+      if (done) return
+      done = true
       conv.off('event', onEvent)
       conv.off('viewChanged', onView)
       conv.off('tierChanged', onTier)
       conv.off('crashed', onCrash)
       const remaining = this.subscribers.get(conversationId)
       remaining?.delete(ws)
+      this.detachCleanups.delete(key)
       if (remaining && remaining.size === 0) this.scheduleReaper(conversationId)
-    })
+    }
+    const key = `${(ws as WebSocket & { __id: string }).__id}:${conversationId}`
+    this.detachCleanups.set(key, cleanup)
+    ws.once('close', cleanup)
+  }
+
+  /**
+   * Remove a WebSocket's subscription to a conversation without closing the WS.
+   * Reuses the per-(ws,conversation) cleanup registered in `attach`; if no
+   * subscribers remain, the reaper fires on its normal schedule.
+   */
+  private detach(ws: WebSocket, conversationId: string): void {
+    const key = `${(ws as WebSocket & { __id: string }).__id}:${conversationId}`
+    const fn = this.detachCleanups.get(key)
+    if (fn) fn()
   }
 
   /**

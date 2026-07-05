@@ -13,12 +13,14 @@ const { Root, Trigger, Portal, Overlay, Content, Title, Description, Close } = D
 export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
   const fontSize = useSessionStore((s) => s.fontSize)
   const editorFontSize = useSessionStore((s) => s.editorFontSize)
+  const maxConversations = useSessionStore((s) => s.maxConversations)
   const uiTheme = useSessionStore((s) => s.uiTheme)
   const terminalTheme = useSessionStore((s) => s.terminalTheme)
   const editorTheme = useSessionStore((s) => s.editorTheme)
   const activeAdapter = useSessionStore((s) => s.activeAdapter)
   const setFontSize = useSessionStore((s) => s.setFontSize)
   const setEditorFontSize = useSessionStore((s) => s.setEditorFontSize)
+  const setMaxConversations = useSessionStore((s) => s.setMaxConversations)
   const setUiTheme = useSessionStore((s) => s.setUiTheme)
   const setEditorTheme = useSessionStore((s) => s.setEditorTheme)
   const setTerminalTheme = useSessionStore((s) => s.setTerminalTheme)
@@ -94,6 +96,30 @@ export function SettingsDrawer({ trigger }: { trigger: React.ReactNode }) {
                 <button
                   onClick={() => setEditorFontSize(Math.min(32, editorFontSize + 1))}
                   disabled={editorFontSize >= 32}
+                  className={`p-1.5 rounded ${ui.border} ${ui.text} ${ui.hover} disabled:opacity-30`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Max Conversations */}
+            <div className="flex items-center justify-between">
+              <span className={`text-sm ${ui.text}`}>Max Conversations</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setMaxConversations(Math.max(1, maxConversations - 1))}
+                  disabled={maxConversations <= 1}
+                  className={`p-1.5 rounded ${ui.border} ${ui.text} ${ui.hover} disabled:opacity-30`}
+                >
+                  <Minus className="w-3.5 h-3.5" />
+                </button>
+                <span className={`w-8 text-center text-sm ${ui.text} tabular-nums`}>
+                  {maxConversations}
+                </span>
+                <button
+                  onClick={() => setMaxConversations(Math.min(10, maxConversations + 1))}
+                  disabled={maxConversations >= 10}
                   className={`p-1.5 rounded ${ui.border} ${ui.text} ${ui.hover} disabled:opacity-30`}
                 >
                   <Plus className="w-3.5 h-3.5" />

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   type ChatClientMessage,
   type ChatServerMessage,
@@ -26,7 +26,7 @@ const CHAT_MSG_TYPES = new Set([
   'CHAT_ERROR',
 ])
 
-function isValidChatMsg(data: unknown): data is { type: string; [key: string]: unknown } {
+function isValidChatMsg(data: unknown): data is { type: string; [k: string]: unknown } {
   if (!data || typeof data !== 'object') return false
   const obj = data as Record<string, unknown>
   return typeof obj.type === 'string' && CHAT_MSG_TYPES.has(obj.type)
@@ -36,15 +36,10 @@ const MAX_MESSAGE_BYTES = 256 * 1024
 const INITIAL_RECONNECT_DELAY = 1_000
 const MAX_RECONNECT_DELAY = 30_000
 
-interface ConnectParams {
-  claudeSessionId: string
-  cwd: string
-  existingConversationId: string | null
-}
-
 export interface UseChatWS {
-  connect: (claudeSessionId: string, cwd: string, existingConversationId?: string | null) => void
-  disconnect: () => void
+  createConversation: (cwd: string) => void
+  switchTo: (conversationId: string) => void
+  closeConversation: (conversationId: string) => void
   sendMessage: (text: string) => void
   escalate: (tier: ChatPermissionTier) => void
   switchView: (mode: ChatViewMode) => void
@@ -53,18 +48,19 @@ export interface UseChatWS {
 }
 
 /**
- * useChatWS — single-channel WebSocket lifecycle for `/ws/chat`.
+ * useChatWS — single app-lifetime WebSocket for `/ws/chat`, multiplexed across
+ * conversations. The socket is opened once on mount and closed on unmount; all
+ * per-conversation actions (create / switch / close / send / escalate / switch
+ * view) are dispatched through the same wire.
  *
- * Auth is done at the HTTP upgrade via the `?token=` query param (same as the
- * terminal channels). There is no CHAT_AUTH handshake: on open we send
- * CHAT_CREATE (new) or CHAT_RECONNECT (resume) directly.
+ * On (re)connect, every `subscribedConversationIds` is re-subscribed (active
+ * first) so the server replays history for all live conversations.
  */
 export function useChatWS(
   getAccessToken: () => string | null,
   onAuthFailure: () => void,
 ): UseChatWS {
   const wsRef = useRef<WebSocket | null>(null)
-  const paramsRef = useRef<ConnectParams | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY)
   const [isConnected, setIsConnected] = useState(false)
@@ -97,162 +93,218 @@ export function useChatWS(
   function handleMessage(data: ChatServerMessage) {
     if (!isValidChatMsg(data)) return
     switch (data.type) {
-      case 'CHAT_CREATED':
-        store.getState().setConversationId(data.conversationId)
-        store.getState().setChatViewMode(data.viewMode)
-        store.getState().setChatTier(data.tier)
-        store.getState().setChatConnected('CONNECTED')
+      case 'CHAT_CREATED': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_CREATED' }>
+        store.getState().setConversationId(m.claudeSessionId, m.conversationId)
+        store.getState().setConversationViewMode(m.conversationId, m.viewMode)
+        store.getState().setConversationTier(m.conversationId, m.tier)
+        store.getState().markSubscribed(m.conversationId)
+        store.getState().setConversationStatus(m.conversationId, 'active')
         setIsConnected(true)
         reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
         clearReconnectTimer()
         break
-      case 'CHAT_HISTORY':
-        store.getState().applyChatAction({ type: 'load-history', messages: data.messages })
-        store.getState().setChatConnected('CONNECTED')
+      }
+      case 'CHAT_HISTORY': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_HISTORY' }>
+        store
+          .getState()
+          .applyChatAction(m.conversationId, { type: 'load-history', messages: m.messages })
+        store.getState().markSubscribed(m.conversationId)
+        store.getState().setConversationStatus(m.conversationId, 'active')
         setIsConnected(true)
         reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
         clearReconnectTimer()
         break
-      case 'CHAT_EVENT':
-        store.getState().applyChatAction({ type: 'event', event: data.event })
+      }
+      case 'CHAT_EVENT': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_EVENT' }>
+        store.getState().applyChatAction(m.conversationId, { type: 'event', event: m.event })
         break
-      case 'CHAT_VIEW_CHANGED':
-        store.getState().setChatViewMode(data.viewMode)
-        store.getState().setChatTier(data.tier)
+      }
+      case 'CHAT_VIEW_CHANGED': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_VIEW_CHANGED' }>
+        store.getState().setConversationViewMode(m.conversationId, m.viewMode)
+        store.getState().setConversationTier(m.conversationId, m.tier)
         break
-      case 'CHAT_CRASHED':
-        store.getState().applyChatAction({
+      }
+      case 'CHAT_CRASHED': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_CRASHED' }>
+        store.getState().setConversationStatus(m.conversationId, 'crashed')
+        store.getState().applyChatAction(m.conversationId, {
           type: 'crashed',
-          message: data.message,
-          resumable: data.resumable,
+          message: m.message,
+          resumable: m.resumable,
         })
         break
-      case 'CHAT_ERROR':
-        console.error('[Chat WS] error:', data.message)
+      }
+      case 'CHAT_ERROR': {
+        const m = data as Extract<ChatServerMessage, { type: 'CHAT_ERROR' }>
+        console.error('[Chat WS] error:', m.message)
+        // A RECONNECT for a conversation the server already reaped (e.g. after
+        // a reconnect outage longer than the 30s idle TTL) returns an error
+        // tagged with conversationId — drop the stale entry locally.
+        if (m.conversationId) store.getState().closeConversation(m.conversationId)
         break
+      }
       case 'CHAT_PONG':
       case 'CHAT_AUTH_OK':
         break
     }
   }
 
-  const connectInternal = useCallback(
-    (claudeSessionId: string, cwd: string, existingConversationId: string | null) => {
-      const token = getAccessToken()
-      if (!token) {
-        onAuthFailure()
-        return
+  const connectInternal = useCallback(() => {
+    const token = getAccessToken()
+    if (!token) {
+      onAuthFailure()
+      return
+    }
+    store.getState().setChatConnected('CONNECTING')
+    const ws = new WebSocket(`${WS_BASE}/ws/chat?token=${encodeURIComponent(token)}`)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      setIsConnected(true)
+      store.getState().setChatConnected('CONNECTED')
+      reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
+      clearReconnectTimer()
+      // Re-subscribe all conversations on (re)connect; active first.
+      const { subscribedConversationIds, activeConversationId } = store.getState()
+      const ordered = activeConversationId
+        ? [
+            activeConversationId,
+            ...subscribedConversationIds.filter((x) => x !== activeConversationId),
+          ]
+        : subscribedConversationIds
+      for (const cid of ordered) send({ type: 'CHAT_RECONNECT', conversationId: cid })
+    }
+
+    ws.onmessage = (event) => {
+      if (typeof event.data !== 'string') return
+      try {
+        handleMessage(JSON.parse(event.data) as ChatServerMessage)
+      } catch {
+        /* malformed */
       }
-      paramsRef.current = { claudeSessionId, cwd, existingConversationId }
-      store.getState().setChatConnected('CONNECTING')
+    }
 
-      const ws = new WebSocket(`${WS_BASE}/ws/chat?token=${encodeURIComponent(token)}`)
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        if (existingConversationId) {
-          send({ type: 'CHAT_RECONNECT', conversationId: existingConversationId })
-        } else {
-          send({
-            type: 'CHAT_CREATE',
-            cwd,
-            claudeSessionId,
-            providerId: 'claude-code',
-            initialTier: 'Explore',
-          })
-        }
-      }
-
-      ws.onmessage = (event) => {
-        if (typeof event.data !== 'string') return
-        try {
-          handleMessage(JSON.parse(event.data) as ChatServerMessage)
-        } catch {
-          /* ignore malformed JSON */
-        }
-      }
-
-      ws.onclose = (event) => {
-        setIsConnected(false)
-        store.getState().setChatConnected('DISCONNECTED')
-        if (event.code === WS_CLOSE_CODE.AUTH_FAILED) onAuthFailure()
-        else scheduleReconnect()
-      }
-
-      ws.onerror = () => {}
-    },
-    [getAccessToken, onAuthFailure],
-  )
+    ws.onclose = (event) => {
+      setIsConnected(false)
+      store.getState().setChatConnected('DISCONNECTED')
+      if (event.code === WS_CLOSE_CODE.AUTH_FAILED) onAuthFailure()
+      else scheduleReconnect()
+    }
+    ws.onerror = () => {}
+  }, [getAccessToken, onAuthFailure, store])
 
   function scheduleReconnect() {
     if (reconnectTimerRef.current) return
-    const p = paramsRef.current
-    if (!p) return
     const delay = reconnectDelayRef.current
     const jittered = delay * (0.5 + Math.random() * 0.5)
     reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY)
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null
-      const params = paramsRef.current
-      if (!params) return
       closeSocket()
-      connectInternal(params.claudeSessionId, params.cwd, params.existingConversationId)
+      connectInternal()
     }, jittered)
   }
 
-  const connect = useCallback(
-    (claudeSessionId: string, cwd: string, existingConversationId?: string | null) => {
+  // Open once on app mount; close on unmount.
+  useEffect(() => {
+    connectInternal()
+    return () => {
       clearReconnectTimer()
-      reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
       closeSocket()
-      connectInternal(claudeSessionId, cwd, existingConversationId ?? null)
+    }
+  }, [connectInternal])
+
+  const ensureSubscribed = useCallback(
+    (conversationId: string) => {
+      if (!conversationId) return
+      const { subscribedConversationIds } = store.getState()
+      if (subscribedConversationIds.includes(conversationId)) return
+      send({ type: 'CHAT_RECONNECT', conversationId })
     },
-    [connectInternal],
+    [store],
   )
 
-  const disconnect = useCallback(() => {
-    paramsRef.current = null
+  const createConversation = useCallback(
+    (cwd: string) => {
+      const claudeSessionId = store.getState().createConversation(cwd)
+      send({
+        type: 'CHAT_CREATE',
+        cwd,
+        claudeSessionId,
+        providerId: 'claude-code',
+        initialTier: 'Explore',
+      })
+    },
+    [store],
+  )
+
+  const switchTo = useCallback(
+    (conversationId: string) => {
+      ensureSubscribed(conversationId)
+      store.getState().switchTo(conversationId)
+    },
+    [ensureSubscribed, store],
+  )
+
+  const closeConversation = useCallback(
+    (conversationId: string) => {
+      send({ type: 'CHAT_DETACH', conversationId })
+      store.getState().closeConversation(conversationId)
+    },
+    [store],
+  )
+
+  const sendMessage = useCallback(
+    (text: string) => {
+      const bytes = new TextEncoder().encode(text).length
+      if (bytes > MAX_MESSAGE_BYTES) {
+        console.warn(`[Chat WS] message exceeds ${MAX_MESSAGE_BYTES} bytes (${bytes}), not sent`)
+        return
+      }
+      const { activeConversationId, conversations } = store.getState()
+      const conv = conversations.find((c) => c.conversationId === activeConversationId)
+      if (!conv?.conversationId) return
+      store.getState().applyChatAction(conv.conversationId, { type: 'user-message', text })
+      send({ type: 'CHAT_SEND', conversationId: conv.conversationId, text })
+    },
+    [store],
+  )
+
+  const escalate = useCallback((tier: ChatPermissionTier) => {
+    const id = store.getState().activeConversationId
+    if (id) send({ type: 'CHAT_ESCALATE', conversationId: id, tier })
+  }, [])
+
+  const switchView = useCallback(
+    (mode: ChatViewMode) => {
+      const id = store.getState().activeConversationId
+      if (id) {
+        send({ type: 'CHAT_SWITCH_VIEW', conversationId: id, viewMode: mode })
+        store.getState().setConversationViewMode(id, mode)
+      }
+    },
+    [store],
+  )
+
+  const reconnect = useCallback(() => {
     clearReconnectTimer()
     reconnectDelayRef.current = INITIAL_RECONNECT_DELAY
     closeSocket()
-    store.getState().setChatConnected('DISCONNECTED')
-    setIsConnected(false)
-  }, [])
-
-  const sendMessage = useCallback((text: string) => {
-    const bytes = new TextEncoder().encode(text).length
-    if (bytes > MAX_MESSAGE_BYTES) {
-      console.warn(`[Chat WS] message exceeds ${MAX_MESSAGE_BYTES} bytes (${bytes}), not sent`)
-      return
-    }
-    // Optimistic local display; the server does not echo user text.
-    store.getState().applyChatAction({ type: 'user-message', text })
-    const convId = store.getState().conversation?.conversationId
-    if (!convId) {
-      console.warn('[Chat WS] no conversationId yet; message shown locally only')
-      return
-    }
-    send({ type: 'CHAT_SEND', conversationId: convId, text })
-  }, [])
-
-  const escalate = useCallback((tier: ChatPermissionTier) => {
-    const convId = store.getState().conversation?.conversationId
-    if (!convId) return
-    send({ type: 'CHAT_ESCALATE', conversationId: convId, tier })
-  }, [])
-
-  const switchView = useCallback((mode: ChatViewMode) => {
-    const convId = store.getState().conversation?.conversationId
-    if (!convId) return
-    send({ type: 'CHAT_SWITCH_VIEW', conversationId: convId, viewMode: mode })
-  }, [])
-
-  const reconnect = useCallback(() => {
-    const p = paramsRef.current
-    if (!p) return
-    closeSocket()
-    connectInternal(p.claudeSessionId, p.cwd, p.existingConversationId)
+    connectInternal()
   }, [connectInternal])
 
-  return { connect, disconnect, sendMessage, escalate, switchView, reconnect, isConnected }
+  return {
+    createConversation,
+    switchTo,
+    closeConversation,
+    sendMessage,
+    escalate,
+    switchView,
+    reconnect,
+    isConnected,
+  }
 }

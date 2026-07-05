@@ -169,6 +169,17 @@ export interface ChatMessage {
   ts: number
 }
 
+// 对话元数据（前端 store 用；status 由前端维护，服务端不持有）
+export interface ConversationMeta {
+  conversationId: string
+  claudeSessionId: string
+  cwd: string
+  viewMode: ChatViewMode
+  tier: ChatPermissionTier
+  status: 'connecting' | 'active' | 'crashed'
+  lastActivity: number
+}
+
 // Chat 通道 客户端 → 服务端
 export type ChatClientMessage =
   | { type: 'CHAT_AUTH'; accessToken: string; protocolVersion: string }
@@ -184,6 +195,7 @@ export type ChatClientMessage =
   | { type: 'CHAT_SEND'; conversationId: string; text: string }
   | { type: 'CHAT_SWITCH_VIEW'; conversationId: string; viewMode: ChatViewMode }
   | { type: 'CHAT_ESCALATE'; conversationId: string; tier: ChatPermissionTier }
+  | { type: 'CHAT_DETACH'; conversationId: string }
   | { type: 'CHAT_PING' }
 
 // Chat 通道 服务端 → 客户端
@@ -211,4 +223,4 @@ export type ChatServerMessage =
       resumable: boolean
     }
   | { type: 'CHAT_HISTORY'; conversationId: string; messages: ChatMessage[] }
-  | { type: 'CHAT_ERROR'; message: string }
+  | { type: 'CHAT_ERROR'; message: string; conversationId?: string }

@@ -165,6 +165,48 @@ function messagesMatching(
   return msgs.filter((m) => pred(m as Record<string, unknown>))
 }
 
+/**
+ * Connect a real ws client to /ws/chat with a valid admin JWT and resolve once
+ * the socket reaches OPEN state. Used by the multi-conversation integration
+ * tests below.
+ */
+async function connectChatWS(): Promise<WebSocket> {
+  const token = makeToken()
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/chat?token=${token}`)
+  await new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve())
+    ws.once('error', (err) => reject(err))
+  })
+  return ws
+}
+
+/**
+ * Collect `n` messages on the ws (any type) and resolve with the parsed array.
+ * Times out after `timeoutMs` to avoid hanging on a missing response.
+ */
+function drain(ws: WebSocket, n: number, timeoutMs = 3000): Promise<unknown[]> {
+  return new Promise((resolve, reject) => {
+    const collected: unknown[] = []
+    const timer = setTimeout(() => {
+      ws.off('message', handler)
+      reject(new Error(`drain: expected ${n} messages, got ${collected.length} in ${timeoutMs}ms`))
+    }, timeoutMs)
+    function handler(data: Buffer) {
+      try {
+        collected.push(JSON.parse(data.toString()))
+      } catch {
+        // ignore non-JSON frames
+      }
+      if (collected.length >= n) {
+        clearTimeout(timer)
+        ws.off('message', handler)
+        resolve(collected)
+      }
+    }
+    ws.on('message', handler)
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Test setup
 // ---------------------------------------------------------------------------
@@ -373,5 +415,61 @@ describe('Chat WS integration — real Fastify + auth + /ws/chat', () => {
 
     adminWs.close()
     userWs.close()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Multi-conversation end-to-end (Task 8: distinct ids + DETACH reaper)
+// ---------------------------------------------------------------------------
+describe('multi-conversation over single /ws/chat', () => {
+  it('two conversations on one WS get distinct conversationIds', async () => {
+    const ws = await connectChatWS()
+    ws.send(
+      JSON.stringify({ type: 'CHAT_CREATE', cwd: '', claudeSessionId: 'c-1', providerId: 'stub' }),
+    )
+    ws.send(
+      JSON.stringify({ type: 'CHAT_CREATE', cwd: '', claudeSessionId: 'c-2', providerId: 'stub' }),
+    )
+    const msgs = await drain(ws, 2)
+    const ids = msgs.map((m) => (m as { conversationId: string }).conversationId)
+    expect(new Set(ids).size).toBe(2)
+    ws.close()
+  })
+
+  it('CHAT_DETACH lets reaper destroy the conversation after 30s', async () => {
+    // Real-timers phase: connect + CHAT_CREATE so we can drain CHAT_CREATED
+    // (drain/waitForMessage rely on setTimeout — must be real timers here).
+    const ws = await connectChatWS()
+    ws.send(
+      JSON.stringify({
+        type: 'CHAT_CREATE',
+        cwd: '',
+        claudeSessionId: 'c-detach',
+        providerId: 'stub',
+      }),
+    )
+    const created = await drain(ws, 1)
+    const id = (created[0] as { conversationId: string }).conversationId
+
+    // Switch to fake timers BEFORE sending DETACH so the reaper's setTimeout
+    // (scheduled inside dispatch on receipt of DETACH) is captured by the fake
+    // clock. We then advance timers to fire the reaper.
+    vi.useFakeTimers()
+    ws.send(JSON.stringify({ type: 'CHAT_DETACH', conversationId: id }))
+    // Let the server I/O loop process the DETACH frame. advanceTimersByTimeAsync
+    // yields to the event loop between timer ticks so real socket I/O completes.
+    await vi.advanceTimersByTimeAsync(0)
+    // Reaper is now scheduled (30s fake timer). Fast-forward past it.
+    await vi.advanceTimersByTimeAsync(31_000)
+    // After the reaper fires, the conversation is destroyed server-side.
+    expect(conversationManager.get(id)).toBeUndefined()
+    vi.useRealTimers()
+
+    // Re-attach on a destroyed conversation → server replies CHAT_ERROR.
+    ws.send(JSON.stringify({ type: 'CHAT_ATTACH', conversationId: id }))
+    const after = await drain(ws, 1)
+    expect((after[0] as { type: string }).type).toBe('CHAT_ERROR')
+
+    ws.close()
   })
 })

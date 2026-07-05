@@ -1,39 +1,47 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { useSessionStore } from '../store/sessionStore'
-import { initialChatState } from '../lib/chatReducer'
 
 describe('sessionStore chat extensions', () => {
   beforeEach(() => {
     useSessionStore.getState().reset()
   })
 
-  it('startConversation sets default Explore/chat and resets chat state', () => {
-    useSessionStore.getState().startConversation('claude-123', '/repo')
-    const { conversation, chat } = useSessionStore.getState()
-    expect(conversation).toEqual({
-      conversationId: null,
-      claudeSessionId: 'claude-123',
+  it('createConversation adds a placeholder with default Explore/chat', () => {
+    const claudeSessionId = useSessionStore.getState().createConversation('/repo')
+    const { conversations, chats, activeConversationId } = useSessionStore.getState()
+    expect(conversations).toHaveLength(1)
+    expect(conversations[0]).toEqual({
+      conversationId: '',
+      claudeSessionId,
       cwd: '/repo',
       viewMode: 'chat',
       tier: 'Explore',
-      panelId: 'terminal-main',
+      status: 'connecting',
+      lastActivity: expect.any(Number),
     })
-    expect(chat).toEqual(initialChatState)
+    // No chat slice until CHAT_CREATED backfills the conversationId.
+    expect(chats).toEqual({})
+    // Placeholder active id is '' until CHAT_CREATED resolves it.
+    expect(activeConversationId).toBe('')
   })
 
-  it('setConversationId updates the conversation id', () => {
-    useSessionStore.getState().startConversation('claude-123', '/repo')
-    useSessionStore.getState().setConversationId('conv-1')
-    expect(useSessionStore.getState().conversation?.conversationId).toBe('conv-1')
+  it('setConversationId backfills the server-assigned id and marks active', () => {
+    const claudeSessionId = useSessionStore.getState().createConversation('/repo')
+    useSessionStore.getState().setConversationId(claudeSessionId, 'conv-1')
+    const { conversations, activeConversationId } = useSessionStore.getState()
+    expect(conversations[0].conversationId).toBe('conv-1')
+    expect(conversations[0].status).toBe('active')
+    expect(activeConversationId).toBe('conv-1')
   })
 
-  it('setChatViewMode and setChatTier update conversation', () => {
-    useSessionStore.getState().startConversation('claude-123', '/repo')
-    useSessionStore.getState().setChatViewMode('terminal')
-    useSessionStore.getState().setChatTier('Edit')
-    const c = useSessionStore.getState().conversation
-    expect(c?.viewMode).toBe('terminal')
-    expect(c?.tier).toBe('Edit')
+  it('setConversationViewMode and setConversationTier update the conversation', () => {
+    const claudeSessionId = useSessionStore.getState().createConversation('/repo')
+    useSessionStore.getState().setConversationId(claudeSessionId, 'conv-1')
+    useSessionStore.getState().setConversationViewMode('conv-1', 'terminal')
+    useSessionStore.getState().setConversationTier('conv-1', 'Edit')
+    const c = useSessionStore.getState().conversations[0]
+    expect(c.viewMode).toBe('terminal')
+    expect(c.tier).toBe('Edit')
   })
 
   it('setChatConnected tracks phase + boolean', () => {
@@ -44,35 +52,39 @@ describe('sessionStore chat extensions', () => {
     expect(useSessionStore.getState().chatConnected).toBe(true)
   })
 
-  it('applyChatAction drives the chat reducer (user-message then event)', () => {
-    useSessionStore.getState().startConversation('claude-123', '/repo')
-    useSessionStore.getState().applyChatAction({ type: 'user-message', text: 'hi' })
+  it('applyChatAction routes by conversationId (user-message then event)', () => {
+    const claudeSessionId = useSessionStore.getState().createConversation('/repo')
+    useSessionStore.getState().setConversationId(claudeSessionId, 'conv-1')
+    useSessionStore.getState().applyChatAction('conv-1', { type: 'user-message', text: 'hi' })
     useSessionStore
       .getState()
-      .applyChatAction({ type: 'event', event: { type: 'text-delta', text: 'Hello!' } })
-    const turns = useSessionStore.getState().chat.turns
+      .applyChatAction('conv-1', { type: 'event', event: { type: 'text-delta', text: 'Hello!' } })
+    const turns = useSessionStore.getState().chats['conv-1'].turns
     expect(turns).toHaveLength(2)
     expect(turns[0].role).toBe('user')
     expect(turns[1].role).toBe('assistant')
     expect(turns[1].text).toBe('Hello!')
   })
 
-  it('endConversation clears conversation and chat', () => {
-    useSessionStore.getState().startConversation('claude-123', '/repo')
-    useSessionStore.getState().applyChatAction({ type: 'user-message', text: 'hi' })
-    useSessionStore.getState().endConversation()
-    expect(useSessionStore.getState().conversation).toBeNull()
-    expect(useSessionStore.getState().chat).toEqual(initialChatState)
-    expect(useSessionStore.getState().chatConnected).toBe(false)
+  it('closeConversation removes the conversation and its chat slice', () => {
+    const claudeSessionId = useSessionStore.getState().createConversation('/repo')
+    useSessionStore.getState().setConversationId(claudeSessionId, 'conv-1')
+    useSessionStore.getState().applyChatAction('conv-1', { type: 'user-message', text: 'hi' })
+    useSessionStore.getState().closeConversation('conv-1')
+    const { conversations, chats, activeConversationId } = useSessionStore.getState()
+    expect(conversations).toHaveLength(0)
+    expect(chats['conv-1']).toBeUndefined()
+    expect(activeConversationId).toBeNull()
   })
 
-  it('reset clears conversation and chat', () => {
-    useSessionStore.getState().startConversation('claude-123', '/repo')
+  it('reset clears conversations and chats', () => {
+    useSessionStore.getState().createConversation('/repo')
     useSessionStore.getState().setChatConnected('CONNECTED')
     useSessionStore.getState().reset()
-    expect(useSessionStore.getState().conversation).toBeNull()
-    expect(useSessionStore.getState().chat).toEqual(initialChatState)
-    expect(useSessionStore.getState().chatConnected).toBe(false)
+    const { conversations, chats, chatConnected } = useSessionStore.getState()
+    expect(conversations).toEqual([])
+    expect(chats).toEqual({})
+    expect(chatConnected).toBe(false)
   })
 
   it('chat WS refs default to null', () => {
@@ -81,5 +93,8 @@ describe('sessionStore chat extensions', () => {
     expect(s.chatEscalate).toBeNull()
     expect(s.chatSwitchView).toBeNull()
     expect(s.chatReconnect).toBeNull()
+    expect(s.chatCreateConversation).toBeNull()
+    expect(s.chatSwitchTo).toBeNull()
+    expect(s.chatCloseConversation).toBeNull()
   })
 })

@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
-import { useAuth } from '../../hooks/useAuth'
-import { useChatWS } from '../../hooks/useChatWS'
+import { useEffect, useRef } from 'react'
 import { useSessionStore } from '../../store/sessionStore'
 import { useUiTheme } from '../../hooks/useUiTheme'
 import { MessageBubble } from './MessageBubble'
@@ -10,56 +8,38 @@ import { ModeSwitch } from './ModeSwitch'
 
 export function ChatView() {
   const ui = useUiTheme()
-  const { logout } = useAuth()
-  const conversation = useSessionStore((s) => s.conversation)
-  const chat = useSessionStore((s) => s.chat)
-  const role = useSessionStore((s) => s.currentUser?.role ?? 'user')
-
-  const getAccessToken = useCallback(() => useSessionStore.getState().accessToken, [])
-  const { connect, disconnect, sendMessage, escalate, switchView, reconnect } = useChatWS(
-    getAccessToken,
-    logout,
+  const activeId = useSessionStore((s) => s.activeConversationId)
+  const conversation = useSessionStore(
+    (s) => s.conversations.find((c) => c.conversationId === s.activeConversationId) ?? null,
   )
-
-  // Expose chat WS actions on the store for external triggers (e.g. the
-  // "back to chat" affordance in the terminal view).
-  useEffect(() => {
-    useSessionStore.setState({
-      sendChatMessage: sendMessage,
-      chatEscalate: escalate,
-      chatSwitchView: switchView,
-      chatReconnect: reconnect,
-    })
-    return () => {
-      useSessionStore.setState({
-        sendChatMessage: null,
-        chatEscalate: null,
-        chatSwitchView: null,
-        chatReconnect: null,
-      })
-    }
-  }, [sendMessage, escalate, switchView, reconnect])
-
-  const claudeSessionId = conversation?.claudeSessionId
-  // Connect once per conversation. cwd/conversationId are read fresh at run-time
-  // (not as deps) so a mid-conversation id/view change never re-triggers a connect.
-  useEffect(() => {
-    if (!claudeSessionId) return
-    const c = useSessionStore.getState().conversation
-    connect(claudeSessionId, c?.cwd ?? '', c?.conversationId ?? null)
-    return () => disconnect()
-  }, [claudeSessionId])
+  const chat = useSessionStore((s) =>
+    s.activeConversationId ? s.chats[s.activeConversationId] : undefined,
+  )
+  const role = useSessionStore((s) => s.currentUser?.role ?? 'user')
+  const sendMessage = useSessionStore((s) => s.sendChatMessage)
+  const escalate = useSessionStore((s) => s.chatEscalate)
+  const switchView = useSessionStore((s) => s.chatSwitchView)
+  const reconnect = useSessionStore((s) => s.chatReconnect)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = scrollRef.current
     el?.scrollTo?.({ top: el.scrollHeight })
-  }, [chat.turns])
+  }, [chat?.turns, activeId])
 
   if (!conversation) {
     return (
       <div className={`absolute inset-0 flex items-center justify-center text-sm ${ui.textDim}`}>
         No active conversation
+      </div>
+    )
+  }
+  if (!chat) {
+    // A placeholder exists (status: 'connecting') but CHAT_CREATED hasn't
+    // arrived yet — show a connecting state rather than "no conversation".
+    return (
+      <div className={`absolute inset-0 flex items-center justify-center text-sm ${ui.textDim}`}>
+        Connecting…
       </div>
     )
   }
@@ -69,8 +49,8 @@ export function ChatView() {
       <ModeSwitch
         tier={conversation.tier}
         role={role}
-        onEscalate={escalate}
-        onSwitchView={switchView}
+        onEscalate={escalate!}
+        onSwitchView={switchView!}
       />
       <div ref={scrollRef} className={`flex-1 overflow-y-auto p-2 ${ui.panel}`}>
         {chat.turns.map((t) => (
@@ -101,7 +81,7 @@ export function ChatView() {
             <p>{chat.crashed.message}</p>
             {chat.crashed.resumable && (
               <button
-                onClick={reconnect}
+                onClick={() => reconnect?.()}
                 className="mt-1 rounded bg-red-500/30 px-2 py-0.5 hover:bg-red-500/50"
               >
                 重新连接
@@ -110,7 +90,7 @@ export function ChatView() {
           </div>
         )}
       </div>
-      <ChatInput onSend={sendMessage} />
+      <ChatInput onSend={sendMessage!} />
     </div>
   )
 }
